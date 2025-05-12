@@ -1,10 +1,12 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 
 # Script to check deployed service versions against GitHub releases
 # Caching implemented ONLY for GitHub release info. Deployed versions are NOT cached.
 # Processing is SEQUENTIAL.
 #
 # Dependencies: yq, jq, curl, gh
+# Requires Bash 4.3+ for associative array key check (-v)
+# Requires Bash 4.0+ for associative arrays (declare -A)
 
 # --- Configuration ---
 CONFIG_FILE="${1:-config.yaml}"
@@ -13,7 +15,11 @@ CACHE_DIR="$HOME/.cache/version_checker" # Used for GH release file cache
 GH_CACHE_SUBDIR="github_releases"
 
 mkdir -p "$TMP_DIR"
-mkdir -p "$CACHE_DIR/$GH_CACHE_SUBDIR" # Ensure GH cache subdir exists
+if ! mkdir -p "$CACHE_DIR/$GH_CACHE_SUBDIR"; then
+    echo "ERROR: Could not create cache directory $CACHE_DIR/$GH_CACHE_SUBDIR" >&2
+    exit 1
+fi
+
 
 # --- Helper Functions ---
 
@@ -43,11 +49,21 @@ check_deps() {
   done
 
   if command -v gh &> /dev/null; then
-    if ! gh auth status &>/dev/null; then
+    # Temporarily disable errexit for this check if it were enabled
+    local prev_opts=""
+    if [[ $- == *e* ]]; then prev_opts="e"; set +e; fi
+
+    gh auth status &>/dev/null
+    local auth_status=$?
+
+    if [[ -n "$prev_opts" ]]; then set -"$prev_opts"; fi # Restore errexit
+
+    if [[ $auth_status -ne 0 ]]; then
       log_error "GitHub CLI ('gh') is installed but not authenticated. Please run 'gh auth login'."
       missing_deps=1
     fi
   fi
+
 
   if [[ "$missing_deps" -eq 1 ]]; then
     exit 1
@@ -61,9 +77,9 @@ SERVICE_URL_TEMPLATE=""
 GITHUB_RELEASE_CACHE_TTL_SECONDS="" # For GitHub release caching
 
 # Associative array to store service repo details
-typeset -A SERVICES_REPO_MAP_DATA
+declare -A SERVICES_REPO_MAP_DATA
 # Associative array for GitHub release in-memory cache (for current script run)
-typeset -A GITHUB_LATEST_VERSION_CACHE
+declare -A GITHUB_LATEST_VERSION_CACHE
 
 # --- YAML Parsing Functions ---
 
@@ -88,13 +104,17 @@ parse_global_config() {
 
 parse_services_repo_map() {
   log_info "Parsing services_repo_map..."
-  local service_keys
-  service_keys=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE"))
+  local service_keys_str
+  service_keys_str=$(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE")
+  # Read string into an array (Bash specific)
+  mapfile -t service_keys < <(echo "$service_keys_str")
+
 
   for key in "${service_keys[@]}"; do
-    SERVICES_REPO_MAP_DATA["$key,display_name"]=$(yq e ".services_repo_map.$key.display_name" "$CONFIG_FILE")
-    SERVICES_REPO_MAP_DATA["$key,repo"]=$(yq e ".services_repo_map.$key.repo" "$CONFIG_FILE")
-    SERVICES_REPO_MAP_DATA["$key,url_param_default"]=$(yq e ".services_repo_map.$key.url_param_default" "$CONFIG_FILE")
+    # Ensure yq output is handled safely if it's null or empty
+    SERVICES_REPO_MAP_DATA["$key,display_name"]=$(yq e ".services_repo_map[\"$key\"].display_name" "$CONFIG_FILE")
+    SERVICES_REPO_MAP_DATA["$key,repo"]=$(yq e ".services_repo_map[\"$key\"].repo" "$CONFIG_FILE")
+    SERVICES_REPO_MAP_DATA["$key,url_param_default"]=$(yq e ".services_repo_map[\"$key\"].url_param_default" "$CONFIG_FILE")
   done
 }
 
@@ -104,26 +124,25 @@ get_latest_github_release() {
   local repo_name="$1"
   local cache_file_tag="$CACHE_DIR/$GH_CACHE_SUBDIR/gh_release_tag_${repo_name//\//_}.txt"
   local cache_ts_file="$CACHE_DIR/$GH_CACHE_SUBDIR/gh_release_ts_${repo_name//\//_}.txt"
-  local current_time=$(date +%s)
+  local current_time
+  current_time=$(date +%s)
   local release_tag="N/A_GH_FETCH"
 
   # Check file cache
   if [[ -f "$cache_file_tag" && -f "$cache_ts_file" ]]; then
-    local cache_ts=$(cat "$cache_ts_file")
+    local cache_ts
+    cache_ts=$(cat "$cache_ts_file")
     if (( (current_time - cache_ts) < GITHUB_RELEASE_CACHE_TTL_SECONDS )); then
       release_tag=$(cat "$cache_file_tag")
       if [[ -z "$release_tag" ]]; then
-          release_tag="ERR_GH_CACHE_EMPTY" # Mark as error to force refetch
+          release_tag="ERR_GH_CACHE_EMPTY"
       else
-          # log_info "Cache hit for $repo_name: $release_tag (File Cache)"
           echo "$release_tag"
           return 0
       fi
     fi
   fi
 
-  # Fetch from GitHub CLI
-  # log_info "Fetching latest release for $repo_name from GitHub (cache miss or expired)..."
   local gh_response_json
   local gh_stderr_file="$TMP_DIR/gh_stderr_${repo_name//\//_}_$$.txt"
 
@@ -175,9 +194,7 @@ get_deployed_version() {
   url="${url//\{effective_tenant\}/$effective_tenant}"
   url="${url//\{effective_env\}/$effective_env}"
 
-  local deployed_version="N/A_DEPLOY_FETCH" # Initial state
-  # log_info "Fetching deployed version from $url (no cache)..." # Optional
-
+  local deployed_version="N/A_DEPLOY_FETCH"
   local response
   response=$(curl --max-time "$DEFAULT_CURL_TIMEOUT_SECONDS" -s -L "$url")
   local http_status=$?
@@ -191,7 +208,8 @@ get_deployed_version() {
   else
     deployed_version=$(echo "$response" | jq -r "$jq_query" 2>/dev/null)
     if [[ -z "$deployed_version" || "$deployed_version" == "null" ]]; then
-      local http_code_from_json=$(echo "$response" | jq -r '.statusCode // .status // ""' 2>/dev/null)
+      local http_code_from_json
+      http_code_from_json=$(echo "$response" | jq -r '.statusCode // .status // ""' 2>/dev/null)
       if [[ -n "$http_code_from_json" && "$http_code_from_json" != "null" ]]; then
         deployed_version="HTTP_$http_code_from_json"
       else
@@ -208,35 +226,41 @@ get_deployed_version() {
 
 # --- Main Processing Function for Each Target ---
 process_target() {
-  local target_json="$1" # No longer needs index for tmp file
+  local target_json="$1"
 
-  local target_name=$(echo "$target_json" | jq -r '.name')
-  local service_key=$(echo "$target_json" | jq -r '.service_key')
-  local environment=$(echo "$target_json" | jq -r '.environment')
-  local tenant=$(echo "$target_json" | jq -r '.tenant')
-  local region_url_param=$(echo "$target_json" | jq -r '.region_url_param')
-  local service_url_param_override=$(echo "$target_json" | jq -r '.service_url_param_override // ""')
+  local target_name
+  target_name=$(echo "$target_json" | jq -r '.name')
+  local service_key
+  service_key=$(echo "$target_json" | jq -r '.service_key')
+  local environment
+  environment=$(echo "$target_json" | jq -r '.environment')
+  local tenant
+  tenant=$(echo "$target_json" | jq -r '.tenant')
+  local region_url_param
+  region_url_param=$(echo "$target_json" | jq -r '.region_url_param')
+  local service_url_param_override
+  service_url_param_override=$(echo "$target_json" | jq -r '.service_url_param_override // ""')
 
-  local service_repo="${SERVICES_REPO_MAP_DATA[$service_key,repo]}"
-  local service_display_name="${SERVICES_REPO_MAP_DATA[$service_key,display_name]}"
-  local service_url_param_default="${SERVICES_REPO_MAP_DATA[$service_key,url_param_default]}"
+  local service_repo="${SERVICES_REPO_MAP_DATA["$service_key,repo"]}"
+  local service_display_name="${SERVICES_REPO_MAP_DATA["$service_key,display_name"]}"
+  local service_url_param_default="${SERVICES_REPO_MAP_DATA["$service_key,url_param_default"]}"
 
   local effective_service_url_param="$service_url_param_default"
   if [[ -n "$service_url_param_override" && "$service_url_param_override" != "null" ]]; then
     effective_service_url_param="$service_url_param_override"
   fi
 
-  # Get latest GitHub release version (uses in-memory Zsh cache first, then file cache via function)
   local latest_gh_version
-  if GITHUB_LATEST_VERSION_CACHE[$service_repo]; then
-    latest_gh_version="${GITHUB_LATEST_VERSION_CACHE[$service_repo]}"
+  # Bash: check if key exists in associative array (Bash 4.3+ for -v)
+  if [[ -v GITHUB_LATEST_VERSION_CACHE["$service_repo"] ]]; then
+    latest_gh_version="${GITHUB_LATEST_VERSION_CACHE["$service_repo"]}"
   else
     latest_gh_version=$(get_latest_github_release "$service_repo")
-    GITHUB_LATEST_VERSION_CACHE[$service_repo]="$latest_gh_version" # Update in-memory cache
+    GITHUB_LATEST_VERSION_CACHE["$service_repo"]="$latest_gh_version"
   fi
 
-  # Get deployed version (always fetch live, no caching)
-  local deployed_version=$(get_deployed_version "$effective_service_url_param" "$region_url_param" "$tenant" "$environment" "$DEFAULT_VERSION_JQ_QUERY")
+  local deployed_version
+  deployed_version=$(get_deployed_version "$effective_service_url_param" "$region_url_param" "$tenant" "$environment" "$DEFAULT_VERSION_JQ_QUERY")
 
   local normalized_deployed_version="${deployed_version#v}"
   local normalized_latest_gh_version="${latest_gh_version#v}"
@@ -261,7 +285,6 @@ process_target() {
     raw_status_text="OUTDATED"
   fi
 
-  # Return the result string
   echo "$target_name|$deployed_version|$latest_gh_version|$status_text|$service_display_name|$tenant|$environment|$region_url_param|$raw_status_text"
 }
 
@@ -294,17 +317,19 @@ main() {
 
   log_info "Processing $num_targets targets sequentially. GitHub releases cached, deployed versions live."
 
-  local results_array=() # Array to store results from each target
+  declare -a results_array=() # Bash: declare indexed array
 
   for i in $(seq 0 $((num_targets - 1))); do
     local target_item_json
     target_item_json=$(echo "$targets_json" | jq -c ".[$i]")
     
-    local target_name_for_progress=$(echo "$target_item_json" | jq -r '.name // "Unknown Target"')
+    local target_name_for_progress
+    target_name_for_progress=$(echo "$target_item_json" | jq -r '.name // "Unknown Target"')
+    # Bash printf: \r needs -en for echo or just use printf
     printf "\rProcessing target %s/%s: %s..." "$((i+1))" "$num_targets" "$target_name_for_progress"
     
     local result_line
-    result_line=$(process_target "$target_item_json") # Call sequentially
+    result_line=$(process_target "$target_item_json")
     
     if [[ -n "$result_line" ]]; then
       results_array+=("$result_line")
@@ -313,12 +338,12 @@ main() {
     fi
   done
   
-  printf "\n" # Newline after progress
+  printf "\n"
   log_info "All targets processed. Generating report..."
 
-  # Determine max column widths
   local max_name_len=12 max_deployed_len=10 max_latest_len=8 max_service_len=15 max_tenant_len=7 max_env_len=5 max_region_len=8
   
+  # Bash: wc -m for characters, ensure compatibility or use wc -c if only ASCII
   max_name_len=$(( $(echo "Target Name" | wc -m) > max_name_len ? $(echo "Target Name" | wc -m) : max_name_len ))
   max_deployed_len=$(( $(echo "Deployed" | wc -m) > max_deployed_len ? $(echo "Deployed" | wc -m) : max_deployed_len ))
   max_latest_len=$(( $(echo "Latest GH" | wc -m) > max_latest_len ? $(echo "Latest GH" | wc -m) : max_latest_len ))
@@ -328,8 +353,9 @@ main() {
   max_region_len=$(( $(echo "Region" | wc -m) > max_region_len ? $(echo "Region" | wc -m) : max_region_len ))
 
   for line in "${results_array[@]}"; do
-    local name deployed latest _ service tenant env region _
-    IFS='|' read -r name deployed latest _ service tenant env region _ <<< "$line"
+    local name deployed latest status_colored_val service tenant env region raw_status_val # Renamed status to avoid conflict
+    # Bash: Read with IFS
+    IFS='|' read -r name deployed latest status_colored_val service tenant env region raw_status_val <<< "$line"
     
     (( ${#name} > max_name_len )) && max_name_len=${#name}
     (( ${#deployed} > max_deployed_len )) && max_deployed_len=${#deployed}
@@ -359,15 +385,19 @@ main() {
     "$max_name_len" "Target Instance" \
     "$max_deployed_len" "Deployed" \
     "$max_latest_len" "Latest GH" \
-    "Status"
+    "Status" # Header for status column
 
   local total_width=$((max_service_len + max_tenant_len + max_env_len + max_region_len + max_name_len + max_deployed_len + max_latest_len + 7*3 + 15))
   printf "%${total_width}s\n" "" | tr " " "-"
 
-  local sorted_results=()
+  # Bash: Process substitution for sort
+  declare -a sorted_results=()
   while IFS= read -r line; do
       sorted_results+=("$line")
   done < <(
+      # Use awk for sorting key, then sort, then cut
+      # Ensure printf "%s\n" is used for array elements to handle lines correctly
+      printf "%s\n" "${results_array[@]}" | \
       awk -F'|' '
       function status_sort_key(status) {
           if (status == "GH_ERROR") return 1;
@@ -377,10 +407,11 @@ main() {
           if (status == "UP-TO-DATE") return 5;
           return 6;
       }
-      { print status_sort_key($9) "|" $0 }' <(printf "%s\n" "${results_array[@]}") | \
+      { print status_sort_key($9) "|" $0 }' | \
       sort -t'|' -k1,1n -k6,6 -k7,7 -k8,8 | \
       cut -d'|' -f2-
   )
+
 
   for line in "${sorted_results[@]}"; do
     local target_name_val deployed_val latest_val status_val service_val tenant_val env_val region_val raw_status_val
@@ -393,7 +424,34 @@ main() {
       "$max_name_len" "$target_name_val" \
       "$max_deployed_len" "$deployed_val" \
       "$max_latest_len" "$latest_val" \
-      "$status_val"
+      "$status_val" # The colored status string
   done
 
-  log_info "Cleaning up temporary directory: $TMP_
+  log_info "Cleaning up temporary directory: $TMP_DIR"
+  if [[ -d "$TMP_DIR" ]]; then
+    if [[ "$TMP_DIR" == /tmp/version_checker_* ]]; then
+        rm -rf "$TMP_DIR"
+    else
+        log_error "Skipping cleanup of unexpected TMP_DIR: $TMP_DIR"
+    fi
+  fi
+}
+
+# --- Trap for cleanup on exit ---
+cleanup() {
+  # Ensure TMP_DIR is set before trying to use it, though it should be
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
+    log_info "Script interrupted or finished. Cleaning up $TMP_DIR..." # Added TMP_DIR to log
+    if [[ "$TMP_DIR" == /tmp/version_checker_* ]]; then
+        rm -rf "$TMP_DIR"
+    else
+        log_error "Skipping cleanup of unexpected TMP_DIR: $TMP_DIR (from trap)"
+    fi
+  else
+    log_info "Script interrupted or finished. TMP_DIR not set or not a directory."
+  fi
+}
+trap cleanup EXIT SIGINT SIGTERM
+
+# --- Run ---
+main "$@"
