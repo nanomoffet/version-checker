@@ -1,10 +1,10 @@
 # config.yaml
 global:
   default_curl_timeout_seconds: 5
-  max_parallel_jobs: 5
-  github_release_cache_ttl_seconds: 3600 # 1 hour
   default_version_jq_query: ".version // \"N/A\""
-  # URL Template: http://{service_url_param}-{region_url_param}.{effective_tenant}-{effective_env}.nbcuni.com/api/version
+  service_url_template: "http://{service_url_param}-{region_url_param}.{effective_tenant}-{effective_env}.nbcuni.com/api/version"
+  github_release_cache_ttl_seconds: 1800 # 1 hour
+  default_version_jq_query: ".version // \"N/A\""
   service_url_template: "http://{service_url_param}-{region_url_param}.{effective_tenant}-{effective_env}.nbcuni.com/api/version"
 
 # List of all services and their GitHub repositories
