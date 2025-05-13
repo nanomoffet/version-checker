@@ -686,10 +686,10 @@ main() {
 
   log_info "All eligible targets processed. Generating report..."
 
-  local max_name_len=13
+  local max_name_len=55
   local max_deployed_len=10
   local max_latest_len=12
-  local max_service_len=7
+  local max_service_len=40
   local max_tenant_len=7
   local max_env_len=5
   local max_region_len=10
@@ -706,7 +706,6 @@ main() {
     ((${#env} > max_env_len)) && max_env_len=${#env}
     ((${#region} > max_region_len)) && max_region_len=${#region}
   done
-
   max_name_len=$((max_name_len + 2))
   max_deployed_len=$((max_deployed_len + 2))
   max_latest_len=$((max_latest_len + 2))
