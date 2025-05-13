@@ -570,4 +570,356 @@ process_target() {
     status_text="${RED}${github_reference_version}${NC}"
     raw_status_text="GH_ERROR"
   elif [[ "$github_reference_version" == "NO_RELEASES" ]]; then
-    status_text="${CYAN}NO_GH_RELEASES${NC}" # Using Cyan for NO_RELE
+    status_text="${CYAN}NO_GH_RELEASES${NC}" # Using Cyan for NO_RELEASES for differentiation
+    raw_status_text="NO_RELEASES"
+  elif [[ "$deployed_version" == TIMEOUT_SVC* || "$deployed_version" == ERR_SVC* || "$deployed_version" == HTTP_* || "$deployed_version" == N/A* ]]; then
+    status_text="${RED}${deployed_version}${NC}"
+    raw_status_text="SVC_ERROR"
+  else
+    compare_versions "$deployed_version" "$github_reference_version"
+    local comparison_result=$?
+    case $comparison_result in
+    0)
+      status_text="${GREEN}UP-TO-DATE${NC}"
+      raw_status_text="UP-TO-DATE"
+      ;;
+    1)
+      status_text="${BLUE}AHEAD${NC}"
+      raw_status_text="AHEAD"
+      ;; # Deployed is newer
+    2)
+      status_text="${YELLOW}OUTDATED${NC}"
+      raw_status_text="OUTDATED"
+      ;; # Deployed is older
+    *)
+      status_text="${YELLOW}CMP_ERR ($deployed_version vs $github_reference_version)${NC}" # Changed from NEEDS_CMP_FIX
+      raw_status_text="UNKNOWN_CMP"
+      ;; # Fallback
+    esac
+  fi
+
+  # Echo the result line. Use the *original* region_url_param from the config
+  # for the report table column, as that's what the target is configured for.
+  echo "$target_name|$deployed_version|$github_reference_version|$status_text|$service_display_name|$tenant|$environment|$region_url_param|$raw_status_text"
+  return 0 # Indicate success
+}
+
+# --- Main Logic ---
+main() {
+  # Command line argument parsing
+  INTERACTIVE_CONFIG_MODE=false
+  # Added v and r: to the optstring
+  while getopts ":f:cvr:h" opt; do
+    case $opt in
+    f) CONFIG_FILE_CMD_OPT="$OPTARG" ;;
+    c) INTERACTIVE_CONFIG_MODE=true ;;
+    v) VERBOSE=true ;; # Set verbose flag
+    r)
+      USER_SPECIFIED_REGION_VALUE="$OPTARG"
+      # Validate region mode
+      case "$USER_SPECIFIED_REGION_VALUE" in
+      off|primary|secondary|all) REGION_FILTER_MODE="$USER_SPECIFIED_REGION_VALUE" ;;
+      *)
+        log_error "Invalid region mode: '$USER_SPECIFIED_REGION_VALUE'. Allowed modes: 'off', 'primary', 'secondary', 'all'."
+        print_usage
+        exit 1
+        ;;
+      esac
+      ;;
+    h)
+      print_usage
+      exit 0
+      ;;
+    \?)
+      log_error "Invalid option: -$OPTARG"
+      print_usage
+      exit 1
+      ;;
+    :)
+      log_error "Option -$OPTARG requires an argument."
+      print_usage
+      exit 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1)) # Remove parsed options
+
+  check_deps
+  parse_global_config     # Uses CONFIG_FILE_CMD_OPT or default
+  parse_services_repo_map # Same
+
+  # Load defaults regardless of interactive mode. Interactive mode will override them if selections are made.
+  parse_defaults_from_config
+
+  if $INTERACTIVE_CONFIG_MODE; then
+    run_interactive_config # This will update SELECTED_TENANTS, ENVS, REGIONS (conditionally), SERVICES, USER_SELECTED_GH_VERSIONS
+  else
+    log_info "Using default filters from config."
+    # If not interactive and no specific GH versions selected (which is the default behavior without -c),
+    # ensure the 'latest' marker is set for *all* configured services from the map data.
+    # Get all configured service keys from the map
+    local all_configured_service_keys=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
+    for skey in "${all_configured_service_keys[@]}"; do
+         # Only set to latest if no user selection was made (which wouldn't happen in non-interactive mode anyway)
+         if [[ ! -v USER_SELECTED_GH_VERSIONS["$skey"] ]]; then
+             USER_SELECTED_GH_VERSIONS["$skey"]="latest"
+         fi
+    done
+    log_info "Version comparison will use latest GitHub release for services not specifically configured (default)."
+  fi
+
+  CONFIG_FILE_TO_USE="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
+  local all_targets_json
+  all_targets_json=$(yq e -o=json '.targets' "$CONFIG_FILE_TO_USE")
+  if [[ -z "$all_targets_json" || "$all_targets_json" == "null" || "$(echo "$all_targets_json" | jq 'length')" == "0" ]]; then
+    log_error "No targets found in $CONFIG_FILE_TO_USE or error parsing targets."
+    exit 1
+  fi
+
+  declare -a final_filtered_targets_json_array=()
+  local num_all_targets
+  num_all_targets=$(echo "$all_targets_json" | jq 'length')
+
+  # Associative array to track which service/tenant/env combos have been selected in 'off' mode
+  # Also tracks instance count for 'primary'/'secondary' region modes
+  declare -A service_tenant_env_selection_tracker
+
+
+  log_info "Filter criteria: Tenants=[${SELECTED_TENANTS[*]}], Envs=[${SELECTED_ENVIRONMENTS[*]}], Services=[${SELECTED_SERVICES[*]}]"
+  log_info "Region mode: '$REGION_FILTER_MODE'."
+  if [[ "$REGION_FILTER_MODE" == "off" ]]; then
+      log_info "Region filtering is OFF. Querying only the FIRST instance encountered for each unique service/tenant/env combo. Region URL parameter will be empty for CURL."
+  else
+      log_info "Region filtering/selection is active based on mode '$REGION_FILTER_MODE'."
+  fi
+
+
+  for i in $(seq 0 $((num_all_targets - 1))); do
+    local current_target_json
+    current_target_json=$(echo "$all_targets_json" | jq -c ".[$i]")
+    local t_tenant t_env t_region t_service_key t_name # Added t_name for logging
+    t_name=$(echo "$current_target_json" | jq -r '.name // "Unnamed Target"')
+    t_tenant=$(echo "$current_target_json" | jq -r '.tenant // "null"')
+    t_env=$(echo "$current_target_json" | jq -r '.environment // "null"')
+    t_region=$(echo "$current_target_json" | jq -r '.region_url_param // "null"')
+    t_service_key=$(echo "$current_target_json" | jq -r '.service_key // "null"')
+
+    # Basic validation for essential fields
+    if [[ "$t_service_key" == "null" || "$t_tenant" == "null" || "$t_env" == "null" || "$t_region" == "null" ]]; then
+        log_debug "Skipping target '$t_name' (index $i) due to missing service_key, tenant, environment, or region_url_param."
+        continue
+    fi
+
+    # Check if service_key exists in the map data, skip if not
+    if [[ ! -v SERVICES_REPO_MAP_DATA["$t_service_key,repo"] ]]; then
+        log_debug "Skipping target '$t_name' (index $i) with unknown service_key '$t_service_key'."
+        continue
+    fi
+
+
+    # Apply Tenant, Environment, and Service filters (Always applied first)
+    local tenant_match=false env_match=false service_match=false
+    if [[ "${SELECTED_TENANTS[0]}" == "all" || " ${SELECTED_TENANTS[*]} " =~ " $t_tenant " ]]; then tenant_match=true; fi
+    if [[ "${SELECTED_ENVIRONMENTS[0]}" == "all" || " ${SELECTED_ENVIRONMENTS[*]} " =~ " $t_env " ]]; then env_match=true; fi
+    if [[ "${SELECTED_SERVICES[0]}" == "all" || " ${SELECTED_SERVICES[*]} " =~ " $t_service_key " ]]; then service_match=true; fi
+
+    if ! $tenant_match || ! $env_match || ! $service_match; then
+      log_debug "Skipping target '$t_name' (index $i): Failed tenant/env/service filter (Tenant:$tenant_match, Env:$env_match, Service:$service_match)."
+      continue # Failed initial filters
+    fi
+
+    # Apply Region filter/selection based on REGION_FILTER_MODE (Applied *after* other filters pass)
+    local region_selection_passed=false
+    local count_key="${t_service_key}-${t_tenant}-${t_env}" # Key for tracking service/tenant/env combos
+
+    case "$REGION_FILTER_MODE" in
+      off)
+        # When mode is 'off', select only the first instance encountered for this combo.
+        # Check if we've already selected an instance for this key.
+        # Associative arrays return 0 for unset keys in arithmetic context.
+        if (( service_tenant_env_selection_tracker["$count_key"] == 0 )); then
+             region_selection_passed=true
+             # Mark this combo as selected (increment count to 1)
+             service_tenant_env_selection_tracker["$count_key"]=1
+             log_debug "Target '$t_name' (index $i) passed region selection (mode 'off', first instance for combo '$count_key')."
+        else
+             log_debug "Skipping target '$t_name' (index $i): Already selected an instance for combo '$count_key' (mode 'off')."
+             region_selection_passed=false # Skip subsequent instances for this combo
+        fi
+        ;;
+      all)
+        # When mode is 'all', all targets matching other filters also pass the region filter stage.
+        region_selection_passed=true
+        log_debug "Target '$t_name' (index $i) passed region filter (mode 'all')."
+        ;;
+      primary|secondary)
+        # Count instances for this service/tenant/env combination encountered so far in the loop
+        # This tracker is reused, so we need to distinguish count tracking from the boolean check for 'off' mode
+        # Let's use separate keys or values if this becomes complex. For now, assuming count > 0 means it's tracked.
+        service_tenant_env_selection_tracker["$count_key"]=$((service_tenant_env_selection_tracker["$count_key"] + 1))
+        local current_instance_number=${service_tenant_env_selection_tracker["$count_key"]}
+
+        if [[ "$REGION_FILTER_MODE" == "primary" && "$current_instance_number" -eq 1 ]]; then
+          region_selection_passed=true
+          log_debug "Target '$t_name' (index $i) passed region selection (mode 'primary', instance #$current_instance_number)."
+        elif [[ "$REGION_FILTER_MODE" == "secondary" && "$current_instance_number" -eq 2 ]]; then
+          region_selection_passed=true
+          log_debug "Target '$t_name' (index $i) passed region selection (mode 'secondary', instance #$current_instance_number)."
+        else
+           log_debug "Skipping target '$t_name' (index $i): Instance #$current_instance_number for $count_key does not match region_mode '$REGION_FILTER_MODE'."
+           region_selection_passed=false # Skip instances beyond the primary/secondary
+        fi
+        ;;
+    esac
+
+    # If all filters/selection pass, add to the final list for processing
+    if $region_selection_passed; then
+      log_debug "Including target '$t_name' (index $i) for processing."
+      final_filtered_targets_json_array+=("$current_target_json")
+    fi
+
+  done
+
+  local num_filtered_targets=${#final_filtered_targets_json_array[@]}
+  if [[ "$num_filtered_targets" -eq 0 ]]; then
+    log_info "No targets match the current filter criteria. Exiting."
+    exit 0
+  fi
+  log_info "Processing $num_filtered_targets targets sequentially (out of $num_all_targets total targets parsed from config)."
+
+  declare -a results_array=0 # Use index 0 as count
+  for i in $(seq 0 $((num_filtered_targets - 1))); do
+    local target_item_json="${final_filtered_targets_json_array[$i]}"
+    local target_name_for_progress
+    target_name_for_progress=$(echo "$target_item_json" | jq -r '.name // "Unknown Target"')
+    # Print progress to stderr to not interfere with potential stdout piping of the report
+    printf "\rProcessing target %s/%s: %s..." "$((i + 1))" "$num_filtered_targets" "$target_name_for_progress" >&2
+
+    local result_line
+    result_line=$(process_target "$target_item_json")
+    # Check the exit status of process_target
+    local process_status=$?
+    if [[ $process_status -eq 0 && -n "$result_line" ]]; then
+        # Only add successful result lines to results_array for table formatting
+        results_array[0]=$((results_array[0] + 1)) # Increment count
+        results_array+=("$result_line")
+    else
+      # process_target logged errors internally for UNKNOWN_SERVICE or processing failures
+      log_debug "Process_target failed for '$target_name_for_progress' (index $i), status $process_status."
+    fi
+  done
+
+  printf "\n" >&2 # Newline after progress updates
+
+  local num_successful_results=${results_array[0]}
+  unset results_array[0] # Remove the count element
+
+  if [[ "$num_successful_results" -eq 0 ]]; then
+     log_info "No successful results to report after processing."
+     exit 0
+  fi
+
+  log_info "All eligible targets processed. Generating report..."
+
+  # Output Table Generation
+  local max_name_len=12 max_deployed_len=10 max_latest_len=10 max_service_len=15 max_tenant_len=7 max_env_len=5 max_region_len=8
+
+  max_name_len=$(($(echo "Target Instance" | wc -m) > max_name_len ? $(echo "Target Instance" | wc -m) : max_name_len))
+  max_deployed_len=$(($(echo "Deployed" | wc -m) > max_deployed_len ? $(echo "Deployed" | wc -m) : max_deployed_len))
+  max_latest_len=$(($(echo "GH Ref Ver" | wc -m) > max_latest_len ? $(echo "GH Ref Ver" | wc -m) : max_latest_len)) # Adjusted Header
+  max_service_len=$(($(echo "Service" | wc -m) > max_service_len ? $(echo "Service" | wc -m) : max_service_len))
+  max_tenant_len=$(($(echo "Tenant" | wc -m) > max_tenant_len ? $(echo "Tenant" | wc -m) : max_tenant_len))
+  max_env_len=$(($(echo "Env" | wc -m) > max_env_len ? $(echo "Env" | wc -m) : max_env_len))
+  max_region_len=$(($(echo "Region" | wc -m) > max_region_len ? $(echo "Region" | wc -m) : max_region_len))
+
+  for line in "${results_array[@]}"; do
+    # Use awk to split fields robustly, handles pipes within fields if they weren't supposed to be there
+    # We need the raw fields before color codes for length calculation
+    local fields=($(echo "$line" | awk -F'|' '{gsub(/\x1B\[[0-9;]*m/, ""); print $1, $2, $3, $5, $6, $7, $8}'))
+    local name="${fields[0]}" deployed="${fields[1]}" latest="${fields[2]}" service="${fields[3]}" tenant="${fields[4]}" env="${fields[5]}" region="${fields[6]}"
+
+    # Recalculate max lengths based on *raw* string length after stripping color codes
+    # Use {##...} and {%...} to remove potential color codes for length calculation
+    ((${#name} > max_name_len)) && max_name_len=${#name}
+    ((${#deployed} > max_deployed_len)) && max_deployed_len=${#deployed}
+    ((${#latest} > max_latest_len)) && max_latest_len=${#latest} # 'latest' here is GH Ref Ver
+    ((${#service} > max_service_len)) && max_service_len=${#service}
+    ((${#tenant} > max_tenant_len)) && max_tenant_len=${#tenant}
+    ((${#env} > max_env_len)) && max_env_len=${#env}
+    ((${#region} > max_region_len)) && max_region_len=${#region}
+  done
+
+  max_name_len=$((max_name_len + 1))
+  max_deployed_len=$((max_deployed_len + 1))
+  max_latest_len=$((max_latest_len + 1))
+  max_service_len=$((max_service_len + 1))
+  max_tenant_len=$((max_tenant_len + 1))
+  max_env_len=$((max_env_len + 1))
+  max_region_len=$((max_region_len + 1))
+
+  local format_string="%-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %s\n"
+  printf "\n--- Service Version Status (Generated: $(date)) ---\n"
+  printf "$format_string" \
+    "$max_service_len" "Service" "$max_tenant_len" "Tenant" "$max_env_len" "Env" "$max_region_len" "Region" \
+    "$max_name_len" "Target Instance" "$max_deployed_len" "Deployed" "$max_latest_len" "GH Ref Ver" "Status"
+
+  local total_width=$((max_service_len + max_tenant_len + max_env_len + max_region_len + max_name_len + max_deployed_len + max_latest_len + 7 * 3 + 15)) # Add padding for separators and status
+  # Ensure total_width is at least a reasonable size
+  if ((total_width < 80)); then total_width=80; fi
+  printf "%${total_width}s\n" "" | tr " " "-"
+
+  declare -a sorted_results=()
+  # Add the count back temporarily for sorting if needed, or just sort the array elements directly
+   while IFS= read -r line; do sorted_results+=("$line"); done < <(
+    printf "%s\n" "${results_array[@]}" |
+      awk -F'|' '
+      # Function to assign a sort key based on raw status string (9th field)
+      function status_sort_key(status) {
+          if (status == "GH_ERROR") return 1;
+          if (status == "SVC_ERROR") return 2;
+          if (status == "AHEAD") return 3;
+          if (status == "OUTDATED") return 4;
+          if (status == "NO_GH_RELEASES") return 5;
+          if (status == "UP-TO-DATE") return 6;
+          return 7; # UNKNOWN_CMP etc.
+      }
+      { print status_sort_key($9) "|" $0 }' |
+      # Sort by status key (1st field), then tenant (6th), env (7th), service display name (5th), then region (8th)
+      # Sorting by region last for 'off' mode means instances for the same combo might appear in different regions,
+      # but only the first one processed overall will be included. The sort order here affects presentation only.
+      sort -t'|' -k1,1n -k6,6 -k7,7 -k5,5 -k8,8 | cut -d'|' -f2- # Cut the added status key
+  )
+
+
+  for line in "${sorted_results[@]}"; do
+    local target_name_val deployed_val gh_ref_ver_val status_val service_val tenant_val env_val region_val _
+    # Read into variables, discard the last field (raw_status_text)
+    IFS='|' read -r target_name_val deployed_val gh_ref_ver_val status_val service_val tenant_val env_val region_val _ <<<"$line"
+    printf "$format_string" \
+      "$max_service_len" "$service_val" "$max_tenant_len" "$tenant_val" "$max_env_len" "$env_val" "$max_region_len" "$region_val" \
+      "$max_name_len" "$target_name_val" "$max_deployed_len" "$deployed_val" "$max_latest_len" "$gh_ref_ver_val" "$status_val"
+  done
+
+  log_info "Cleaning up temporary directory: $TMP_DIR" >&2 # Log cleanup message to stderr
+  if [[ -n "$TMP_DIR" ]] && [[ "$TMP_DIR" == /tmp/version_checker_* ]] && [[ -d "$TMP_DIR" ]]; then
+    log_debug "Removing $TMP_DIR..." >&2
+    rm -rf "$TMP_DIR"
+  else
+     log_debug "Cleanup skipped for TMP_DIR: '$TMP_DIR' (either empty, unexpected pattern, or non-existent)." >&2
+  fi
+}
+
+# --- Trap for cleanup ---
+cleanup() {
+  # Check if TMP_DIR exists and is the expected pattern before attempting removal
+  if [[ -n "$TMP_DIR" ]] && [[ "$TMP_DIR" == /tmp/version_checker_* ]] && [[ -d "$TMP_DIR" ]]; then
+    log_info "Script interrupted/finished. Cleaning up $TMP_DIR..." >&2 # Log cleanup message to stderr
+    rm -rf "$TMP_DIR"
+  #else # Don't log debug unless DEBUG is true
+  #   log_debug "Cleanup skipped for TMP_DIR: '$TMP_DIR' (either empty, unexpected pattern, or non-existent)." >&2
+  fi
+}
+trap cleanup EXIT SIGINT SIGTERM
+
+# --- Run ---
+main "$@"
