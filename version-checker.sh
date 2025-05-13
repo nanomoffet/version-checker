@@ -317,8 +317,6 @@ get_deployed_version() {
   echo "$deployed_version"
 }
 
-
-
 run_interactive_config() {
   CONFIG_FILE_TO_USE="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
   log_info "Starting interactive configuration using gum..."
@@ -339,20 +337,23 @@ run_interactive_config() {
 
   if [[ ${#all_tenants[@]} -gt 0 ]]; then
     echo "Select tenants to query (current defaults: ${SELECTED_TENANTS[*]}):"
-    mapfile -t SELECTED_TENANTS_GUM < <(gum choose --no-limit "${all_tenants[@]}")
+    # Added -- to gum choose
+    mapfile -t SELECTED_TENANTS_GUM < <(gum choose --no-limit -- "${all_tenants[@]}")
     if [[ ${#SELECTED_TENANTS_GUM[@]} -gt 0 ]]; then SELECTED_TENANTS=("${SELECTED_TENANTS_GUM[@]}"); fi
   fi
 
   if [[ ${#all_environments[@]} -gt 0 ]]; then
     echo "Select environments to query (current defaults: ${SELECTED_ENVIRONMENTS[*]}):"
-    mapfile -t SELECTED_ENVIRONMENTS_GUM < <(gum choose --no-limit "${all_environments[@]}")
+    # Added -- to gum choose
+    mapfile -t SELECTED_ENVIRONMENTS_GUM < <(gum choose --no-limit -- "${all_environments[@]}")
     if [[ ${#SELECTED_ENVIRONMENTS_GUM[@]} -gt 0 ]]; then SELECTED_ENVIRONMENTS=("${SELECTED_ENVIRONMENTS_GUM[@]}"); fi
   fi
 
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
     log_info "Region filter mode: '$REGION_FILTER_MODE'. Region selection below sets default for '--config' mode, but will NOT filter targets in 'off' mode (queries one instance per service/tenant/env combo)."
     if [[ ${#all_regions[@]} -gt 0 ]]; then
-      mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit "${all_regions[@]}")
+      # Added -- to gum choose
+      mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit -- "${all_regions[@]}")
       if [[ ${#SELECTED_REGIONS_GUM[@]} -eq 0 ]]; then
         log_debug "Interactive region selection was empty. Defaulting SELECTED_REGIONS filter variable to 'all'."
         SELECTED_REGIONS=("all")
@@ -369,24 +370,37 @@ run_interactive_config() {
 
   if [[ ${#all_service_display_names[@]} -gt 0 ]]; then
     echo "Select services to query (current defaults: ${SELECTED_SERVICES[*]}):"
-    mapfile -t selected_display_names < <(gum choose --no-limit "${all_service_display_names[@]}")
+    # Added -- to gum choose (this is the line that was likely erroring)
+    mapfile -t selected_display_names < <(gum choose --no-limit -- "${all_service_display_names[@]}")
     if [[ ${#selected_display_names[@]} -gt 0 ]]; then
       SELECTED_SERVICES=()
       for display_name_with_key in "${selected_display_names[@]}"; do
+        # This parsing logic should be correct if selected_display_names has the expected format
         local skey_from_display="${display_name_with_key##*\(}" 
         skey_from_display="${skey_from_display%)}"    
         SELECTED_SERVICES+=("$skey_from_display")
       done
-      log_debug "Interactively selected services (keys): ${SELECTED_SERVICES[*]}"
+      log_debug "Interactively selected services (keys): ${SELECTED_SERVICES[*]}" # Helpful for debugging
     else
-      log_info "No services selected interactively. Using default services: ${SELECTED_SERVICES[*]}."
+      # This branch might be taken if gum fails and selected_display_names is empty
+      log_info "No services selected interactively (or gum failed). Using default services: ${SELECTED_SERVICES[*]}."
     fi
   fi
 
   local effective_selected_services=("${SELECTED_SERVICES[@]}")
-  if [[ "${effective_selected_services[0]}" == "all" ]]; then
+  # If SELECTED_SERVICES is empty due to gum failure, effective_selected_services will also be empty,
+  # which might lead to "No services configured in config" later.
+  if [[ "${SELECTED_SERVICES[0]}" == "all" ]]; then # Check SELECTED_SERVICES not effective_selected_services for 'all' from gum.
     effective_selected_services=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
+  elif [[ ${#SELECTED_SERVICES[@]} -eq 0 && "${SELECTED_SERVICES_DEFAULT_ON_EMPTY_GUM:-}" != "true" ]]; then
+      # Handle case where gum selection resulted in empty SELECTED_SERVICES and defaults weren't applied.
+      # This depends on how you want to handle it. If defaults should apply if gum returns nothing,
+      # then the 'else' in the gum selection block should re-assign SELECTED_SERVICES to defaults.
+      # For now, assume if gum selection is empty, no services selected by user.
+      log_info "No services were interactively selected. Check previous logs if this was unexpected."
+      effective_selected_services=() # Ensure it's empty if no specific services were chosen
   fi
+
 
   if [[ ${#effective_selected_services[@]} -gt 0 ]]; then
     for service_key_to_configure in "${effective_selected_services[@]}"; do
@@ -405,7 +419,9 @@ run_interactive_config() {
 
         local gum_options=("Use latest GitHub release (auto)" "${latest_5_tags[@]}")
         echo "Choose GitHub version for comparison for $display_name_for_service:"
-        chosen_version=$(gum choose "${gum_options[@]}")
+        # Added -- to gum choose
+        local chosen_version # Make sure it's local if not already
+        chosen_version=$(gum choose -- "${gum_options[@]}")
 
         if [[ "$chosen_version" == "Use latest GitHub release (auto)" || -z "$chosen_version" ]]; then
           USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest"
@@ -414,11 +430,11 @@ run_interactive_config() {
         fi
       else
         log_error "Service key '$service_key_to_configure' selected but not found in services_repo_map. Skipping GH version selection for this service."
-        USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest"
+        USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Default to latest if service key is problematic
       fi
     done
   else
-    log_info "No services configured in config. Skipping GitHub version selection."
+    log_info "No services to configure GitHub versions for (either none selected or 'all' yielded no actual keys)."
   fi
   log_info "Interactive configuration complete."
 }
