@@ -130,7 +130,7 @@ compare_versions() {
 
   # If sort -V had issues (e.g., non-version strings), $sorted_first might be unreliable.
   # As a basic check, if $sorted_first is empty or not one of the inputs, treat as non-comparable.
-  if [[ -z "$sorted_first" || ("$sorted_first" != "$v1" && "$sorted_first" != "$v2") ]]; then
+  if [[ -z "$sorted_first" || (""$sorted_first"" != ""$v1"" && ""$sorted_first"" != ""$v2"") ]]; then
     # Fallback for non-standard versions that sort -V might fail on
     if [[ "$v1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ && "$v2" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
         # If they look like standard versions but sort failed, something is wrong, mark as error
@@ -187,11 +187,27 @@ parse_defaults_from_config() {
   SELECTED_REGIONS=($(echo "${SELECTED_REGIONS[@]}" | xargs))
   SELECTED_SERVICES=($(echo "${SELECTED_SERVICES[@]}" | xargs))
 
-  # Ensure 'all' is a single element if present
+  # Ensure 'all' is a single element if present and trim any null/empty entries
+  SELECTED_TENANTS=($(echo "${SELECTED_TENANTS[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
+  SELECTED_ENVIRONMENTS=($(echo "${SELECTED_ENVIRONMENTS[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
+  SELECTED_REGIONS=($(echo "${SELECTED_REGIONS[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
+  SELECTED_SERVICES=($(echo "${SELECTED_SERVICES[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
+
+
    if [[ "${SELECTED_TENANTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_TENANTS=("all"); fi
    if [[ "${SELECTED_ENVIRONMENTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_ENVIRONMENTS=("all"); fi
-   if [[ "${SELECTED_REGIONS[*]}" =~ (^| )all( |$) ]]; then SELECTED_REGIONS=("all"); fi
+   # Note: SELECTED_REGIONS default handling needs care in interactive mode when REGION_FILTER_MODE is off
    if [[ "${SELECTED_SERVICES[*]}" =~ (^| )all( |$) ]]; then SELECTED_SERVICES=("all"); fi
+
+   # Handle case where defaults were empty/null, ensure they become "all"
+   if [[ ${#SELECTED_TENANTS[@]} -eq 0 ]]; then SELECTED_TENANTS=("all"); fi
+   if [[ ${#SELECTED_ENVIRONMENTS[@]} -eq 0 ]]; then SELECTED_ENVIRONMENTS=("all"); fi
+   if [[ ${#SELECTED_REGIONS[@]} -eq 0 ]]; then SELECTED_REGIONS=("all"); fi # Default regions to "all" if config is empty/null
+   if [[ ${#SELECTED_SERVICES[@]} -eq 0 ]]; then SELECTED_SERVICES=("all"); fi
+
+
+   log_debug "Loaded defaults: Tenants=${SELECTED_TENANTS[*]}, Envs=${SELECTED_ENVIRONMENTS[*]}, Regions=${SELECTED_REGIONS[*]}, Services=${SELECTED_SERVICES[*]}"
+
 }
 
 parse_services_repo_map() {
@@ -362,6 +378,10 @@ run_interactive_config() {
   CONFIG_FILE_TO_USE="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
   log_info "Starting interactive configuration using gum..."
 
+  # Note: SELECTED_TENANTS, SELECTED_ENVIRONMENTS, SELECTED_REGIONS, SELECTED_SERVICES
+  # are already populated with defaults before this function runs (see main).
+  # Interactive selection will OVERRIDE these defaults if the user makes a selection.
+
   local all_tenants=($(yq e '.targets[].tenant' "$CONFIG_FILE_TO_USE" | sort -u | xargs))
   local all_environments=($(yq e '.targets[].environment' "$CONFIG_FILE_TO_USE" | sort -u | xargs))
   local all_regions=($(yq e '.targets[].region_url_param' "$CONFIG_FILE_TO_USE" | sort -u | xargs))
@@ -373,41 +393,53 @@ run_interactive_config() {
   done
 
   # Add "all" option to each filter list if they are not empty
+  # If there are NO targets for a filter type, gum choose with empty list is okay.
   if [[ ${#all_tenants[@]} -gt 0 ]]; then all_tenants=("all" "${all_tenants[@]}"); fi
   if [[ ${#all_environments[@]} -gt 0 ]]; then all_environments=("all" "${all_environments[@]}"); fi
-
-  # If -r flag is used, interactive region selection is ignored. Inform the user.
-  if [[ "$REGION_FILTER_MODE" == "off" ]]; then
-      # Only show region selection if the mode is 'off'
-      if [[ ${#all_regions[@]} -gt 0 ]]; then all_regions=("all" "${all_regions[@]}"); fi
-      echo "Select regions to query:"
-      mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit "${all_regions[@]}")
-      # Use the gum selection unless it's empty (user cancelled)
-      if [[ ${#SELECTED_REGIONS_GUM[@]} -gt 0 ]]; then SELECTED_REGIONS=("${SELECTED_REGIONS_GUM[@]}"); fi
-  else
-      log_info "Region selection via gum skipped because -r '$USER_SPECIFIED_REGION_VALUE' was used (mode '$REGION_FILTER_MODE')."
-      # Ensure SELECTED_REGIONS is set according to the mode for the main filtering logic if needed
-      # (In primary/secondary/all modes, the main filtering logic handles the region part,
-      # so SELECTED_REGIONS isn't strictly used for filtering in those modes, but let's clarify)
-      # For 'all' or 'primary'/'secondary', the filtering in main() bypasses SELECTED_REGIONS.
-      # No change needed here, just clarification.
-  fi
+  # Region list for gum is only used if REGION_FILTER_MODE is 'off'
+  if [[ ${#all_regions[@]} -gt 0 ]]; then all_regions=("all" "${all_regions[@]}"); fi
 
 
   if [[ ${#all_tenants[@]} -gt 0 ]]; then
-    echo "Select tenants to query:"
+    echo "Select tenants to query (current defaults: ${SELECTED_TENANTS[*]}):"
     mapfile -t SELECTED_TENANTS_GUM < <(gum choose --no-limit "${all_tenants[@]}")
+    # Override default if selection was made (not empty)
     if [[ ${#SELECTED_TENANTS_GUM[@]} -gt 0 ]]; then SELECTED_TENANTS=("${SELECTED_TENANTS_GUM[@]}"); fi
   fi
 
   if [[ ${#all_environments[@]} -gt 0 ]]; then
-    echo "Select environments to query:"
+    echo "Select environments to query (current defaults: ${SELECTED_ENVIRONMENTS[*]}):"
     mapfile -t SELECTED_ENVIRONMENTS_GUM < <(gum choose --no-limit "${all_environments[@]}")
-    if [[ ${#SELECTED_ENVIRONMENTS_GUM[@]} -gt 0 ]]; then SELECTED_ENVIRONMENTS=("${SELECTED_ENVIRONMENTS_GUM[@]}"); fi
+     if [[ ${#SELECTED_ENVIRONMENTS_GUM[@]} -gt 0 ]]; then SELECTED_ENVIRONMENTS=("${SELECTED_ENVIRONMENTS_GUM[@]}"); fi
   fi
 
+  # Handle Region Selection based on REGION_FILTER_MODE
+  if [[ "$REGION_FILTER_MODE" == "off" ]]; then
+      log_info "Region filter mode: '$REGION_FILTER_MODE'. Select regions to query (current defaults: ${SELECTED_REGIONS[*]}):"
+      # Only show region selection if the mode is 'off'
+      if [[ ${#all_regions[@]} -gt 0 ]]; then
+          mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit "${all_regions[@]}")
+          # IMPORTANT FIX: If interactive region selection is empty (user cancelled/selected none),
+          # default SELECTED_REGIONS to "all" so the filter doesn't exclude everything.
+          if [[ ${#SELECTED_REGIONS_GUM[@]} -eq 0 ]]; then
+              log_debug "Interactive region selection was empty. Defaulting SELECTED_REGIONS to 'all'."
+              SELECTED_REGIONS=("all")
+          else
+              SELECTED_REGIONS=("${SELECTED_REGIONS_GUM[@]}") # Use the gum selection
+          fi
+      else
+          log_info "No regions found in config for interactive selection. Defaulting SELECTED_REGIONS to 'all'."
+          SELECTED_REGIONS=("all") # No regions to select from, default to all
+      fi
+  else
+      log_info "Region selection via gum skipped because -r '$USER_SPECIFIED_REGION_VALUE' was used (mode '$REGION_FILTER_MODE')."
+      # SELECTED_REGIONS will retain the default value loaded before this function,
+      # but its value is ignored by the main filter loop when mode is not 'off'.
+  fi
+
+
   if [[ ${#all_service_display_names[@]} -gt 0 ]]; then
-      echo "Select services to query:"
+      echo "Select services to query (current defaults: ${SELECTED_SERVICES[*]}):"
       # Using display names for gum, then map back to service_keys
       mapfile -t selected_display_names < <(gum choose --no-limit "${all_service_display_names[@]}")
       if [[ ${#selected_display_names[@]} -gt 0 ]]; then
@@ -421,15 +453,20 @@ run_interactive_config() {
       else
          # If user selected none, default back to 'all' services or keep previous defaults?
          # Let's keep the previous defaults if interactive resulted in empty selection
-         log_info "No services selected interactively. Using default services."
+         log_info "No services selected interactively. Using default services: ${SELECTED_SERVICES[*]}."
       fi
   fi
 
+  # For each *selected* service, prompt for GitHub version UNLESS 'all' services selected
+  local effective_selected_services=("${SELECTED_SERVICES[@]}")
+  if [[ "${effective_selected_services[0]}" == "all" ]]; then
+     # If 'all' is selected, use all configured service keys for the GH prompt step
+     effective_selected_services=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
+  fi
 
-  # For each selected service, prompt for GitHub version UNLESS 'all' services selected
-  if [[ "${SELECTED_SERVICES[0]}" != "all" && ${#SELECTED_SERVICES[@]} -gt 0 ]]; then
-    for service_key_to_configure in "${SELECTED_SERVICES[@]}"; do
-      # Ensure the service key is valid and has repo info
+  if [[ ${#effective_selected_services[@]} -gt 0 ]]; then
+    for service_key_to_configure in "${effective_selected_services[@]}"; do
+      # Ensure the service key is valid and has repo info before prompting for GH version
       if [[ -v SERVICES_REPO_MAP_DATA["$service_key_to_configure,repo"] ]]; then
         local repo_for_service="${SERVICES_REPO_MAP_DATA["$service_key_to_configure,repo"]}"
         local display_name_for_service="${SERVICES_REPO_MAP_DATA["$service_key_to_name"]:-$service_key_to_configure}"
@@ -437,13 +474,8 @@ run_interactive_config() {
         echo "Fetching 5 latest releases for $display_name_for_service ($repo_for_service)..."
         mapfile -t latest_5_tags < <(get_latest_github_release_tags "$repo_for_service" 5)
 
-        if [[ "${latest_5_tags[0]}" == ERR_* || "${latest_5_tags[0]}" == "NO_RELEASES" ]]; then
-          log_error "Could not fetch releases for $display_name_for_service. Will use 'latest' logic for comparison."
-          USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Fallback marker
-          continue
-        fi
-        if [[ ${#latest_5_tags[@]} -eq 0 ]]; then
-          log_error "No releases found for $display_name_for_service. Will use 'latest' logic."
+        if [[ "${latest_5_tags[0]}" == ERR_* || "${latest_5_tags[0]}" == "NO_RELEASES" || ${#latest_5_tags[@]} -eq 0 ]]; then
+          log_error "Could not fetch releases or no releases found for $display_name_for_service. Will use 'latest' logic for comparison."
           USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Fallback marker
           continue
         fi
@@ -463,14 +495,7 @@ run_interactive_config() {
       fi
     done
   else
-    log_info "All services selected or no services configured. Version comparison will use latest GitHub release for all."
-    # Ensure the special 'latest' marker is set for *all* configured services if not interactively selected
-    # This handles cases where 'all' was the default or interactively chosen
-    # Get all configured service keys from the map
-    local all_configured_service_keys=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
-    for skey in "${all_configured_service_keys[@]}"; do
-         USER_SELECTED_GH_VERSIONS["$skey"]="latest"
-    done
+    log_info "No services configured in config. Skipping GitHub version selection."
   fi
   log_info "Interactive configuration complete."
 }
@@ -491,6 +516,7 @@ process_target() {
   # Ensure service_key exists in the map data
   if [[ ! -v SERVICES_REPO_MAP_DATA["$service_key,repo"] ]]; then
       log_error "Target '$target_name' refers to unknown service_key '$service_key'. Skipping."
+      # Return a dummy result line for logging/error indication, but it won't be included in the final table
       echo "$target_name|N/A_UNKNOWN_SVC|N/A_UNKNOWN_SVC|${RED}UNKNOWN_SERVICE${NC}|Unknown Service ($service_key)|$tenant|$environment|$region_url_param|UNKNOWN_SERVICE"
       return 1 # Indicate failure
   fi
@@ -509,19 +535,24 @@ process_target() {
   if [[ -v USER_SELECTED_GH_VERSIONS["$service_key"] && "${USER_SELECTED_GH_VERSIONS["$service_key"]}" != "latest" ]]; then
     github_reference_version="${USER_SELECTED_GH_VERSIONS["$service_key"]}"
     log_debug "Using user-selected GH version ${github_reference_version} for $service_key"
-  else
-    # Otherwise, fetch or use the cached latest release
-    github_reference_version=$(get_cached_or_fetch_latest_gh_release "$service_repo")
+  elif [[ -v USER_SELECTED_GH_VERSIONS["$service_key"] && "${USER_SELECTED_GH_VERSIONS["$service_key"]}" == "latest" ]]; then
+     # Otherwise, fetch or use the cached latest release IF 'latest' was the selected mode
+     github_reference_version=$(get_cached_or_fetch_latest_gh_release "$service_repo")
      log_debug "Using latest GH version ${github_reference_version} (cached or fetched) for $service_key"
+  else
+     # Fallback if service_key wasn't in USER_SELECTED_GH_VERSIONS (shouldn't happen if defaults are loaded correctly)
+     log_debug "No GH version specified for $service_key, defaulting to latest."
+     github_reference_version=$(get_cached_or_fetch_latest_gh_release "$service_repo")
   fi
 
-  # --- Apply REGION_FILTER_MODE 'off' logic ---
+
+  # --- Apply REGION_FILTER_MODE 'off' logic for URL construction ---
   # If the region mode is 'off', the URL template should use an empty string
   # for the region placeholder, regardless of the target's configured region.
-  local effective_region_url_param="$region_url_param" # Default to the configured region
+  local effective_region_url_param="$region_url_param" # Default to the configured region from config
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
       log_debug "REGION_FILTER_MODE is 'off'. Setting effective_region_url_param to empty string for URL construction."
-      effective_region_url_param=""
+      effective_region_url_param="" # Override for URL building
   fi
   # --- End of REGION_FILTER_MODE 'off' logic ---
 
@@ -535,7 +566,7 @@ process_target() {
     raw_status_text="GH_ERROR"
   elif [[ "$github_reference_version" == "NO_RELEASES" ]]; then
     status_text="${CYAN}NO_GH_RELEASES${NC}" # Using Cyan for NO_RELEASES for differentiation
-    raw_status_text="NO_GH_RELEASES"
+    raw_status_text="NO_RELEASES"
   elif [[ "$deployed_version" == TIMEOUT_SVC* || "$deployed_version" == ERR_SVC* || "$deployed_version" == HTTP_* || "$deployed_version" == N/A* ]]; then
     status_text="${RED}${deployed_version}${NC}"
     raw_status_text="SVC_ERROR"
@@ -612,17 +643,26 @@ main() {
   parse_global_config     # Uses CONFIG_FILE_CMD_OPT or default
   parse_services_repo_map # Same
 
+  # Load defaults regardless of interactive mode. Interactive mode will override them if selections are made.
+  parse_defaults_from_config
+
   if $INTERACTIVE_CONFIG_MODE; then
-    # parse_defaults_from_config is called implicitly in run_interactive_config if user cancels
-    run_interactive_config
+    run_interactive_config # This will update SELECTED_TENANTS, ENVS, REGIONS (conditionally), SERVICES, USER_SELECTED_GH_VERSIONS
   else
-    parse_defaults_from_config
-    # If not interactive and no specific GH versions selected, ensure all use 'latest'
+    log_info "Using default filters from config."
+    # If not interactive and no specific GH versions selected (which is the default behavior without -c),
+    # ensure the 'latest' marker is set for *all* configured services from the map data.
+    # This is already handled by parse_defaults_from_config and the logic in run_interactive_config,
+    # but explicitly ensure here if not interactive.
     # Get all configured service keys from the map
     local all_configured_service_keys=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
     for skey in "${all_configured_service_keys[@]}"; do
-         USER_SELECTED_GH_VERSIONS["$skey"]="latest"
+         # Only set to latest if no user selection was made (which wouldn't happen in non-interactive mode anyway)
+         if [[ ! -v USER_SELECTED_GH_VERSIONS["$skey"] ]]; then
+             USER_SELECTED_GH_VERSIONS["$skey"]="latest"
+         fi
     done
+    log_info "Version comparison will use latest GitHub release for services not specifically configured (default)."
   fi
 
   CONFIG_FILE_TO_USE="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
@@ -640,10 +680,10 @@ main() {
   # Associative array to track instance count for 'primary'/'secondary' region modes
   declare -A service_tenant_env_instance_count
 
-  log_info "Applying filters: Tenants=${SELECTED_TENANTS[*]}, Envs=${SELECTED_ENVIRONMENTS[*]}, Services=${SELECTED_SERVICES[*]}"
+  log_info "Filter criteria: Tenants=[${SELECTED_TENANTS[*]}], Envs=[${SELECTED_ENVIRONMENTS[*]}], Services=[${SELECTED_SERVICES[*]}]"
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
       # When mode is 'off' (default or -r off), use SELECTED_REGIONS for filtering
-      log_info "Region filter mode: '$REGION_FILTER_MODE'. Using SELECTED_REGIONS=${SELECTED_REGIONS[*]} for filtering. Region URL parameter will be empty."
+      log_info "Region filter mode: '$REGION_FILTER_MODE'. Filtering regions=[${SELECTED_REGIONS[*]}]. For matching targets, Region URL parameter will be empty."
   else
       # When mode is 'primary', 'secondary', or 'all', override region filter
       log_info "Region filter mode: '$REGION_FILTER_MODE'. Interactive/default region filter ignored. Region filtering/selection handled by mode."
@@ -680,7 +720,7 @@ main() {
     if [[ "${SELECTED_SERVICES[0]}" == "all" || " ${SELECTED_SERVICES[*]} " =~ " $t_service_key " ]]; then service_match=true; fi
 
     if ! $tenant_match || ! $env_match || ! $service_match; then
-      log_debug "Skipping target '$t_name' (index $i): Failed tenant/env/service filter."
+      log_debug "Skipping target '$t_name' (index $i): Failed tenant/env/service filter (Tenant:$tenant_match, Env:$env_match, Service:$service_match)."
       continue # Failed initial filters
     fi
 
@@ -691,7 +731,12 @@ main() {
     case "$REGION_FILTER_MODE" in
       off)
         # When mode is 'off', filter based on SELECTED_REGIONS from config/interactive
-        if [[ "${SELECTED_REGIONS[0]}" == "all" || " ${SELECTED_REGIONS[*]} " =~ " $t_region " ]]; then region_filter_passed=true; fi
+        # Check if the current target's region is in the SELECTED_REGIONS list (or if SELECTED_REGIONS is "all").
+        if [[ "${SELECTED_REGIONS[0]}" == "all" || " ${SELECTED_REGIONS[*]} " =~ " $t_region " ]]; then
+             region_filter_passed=true;
+        else
+             log_debug "Skipping target '$t_name' (index $i): Region '$t_region' not in SELECTED_REGIONS for mode 'off'."
+        fi
         ;;
       all)
         # Region filter is effectively off, all regions for this service/tenant/env combination match
@@ -699,8 +744,6 @@ main() {
         ;;
       primary|secondary)
         # Count instances for this service/tenant/env combination encountered so far in the loop
-        # (Sorting helps make 'primary'/'secondary' deterministic if targets are sorted by region in config,
-        # but processing is sequential based on config order otherwise)
         service_tenant_env_instance_count["$count_key"]=$((service_tenant_env_instance_count["$count_key"] + 1))
         local current_instance_number=${service_tenant_env_instance_count["$count_key"]}
 
@@ -719,8 +762,6 @@ main() {
     if $region_filter_passed; then
       log_debug "Including target '$t_name' (index $i): Filters passed."
       final_filtered_targets_json_array+=("$current_target_json")
-    else
-       log_debug "Skipping target '$t_name' (index $i): Failed region filter/selection for mode '$REGION_FILTER_MODE'."
     fi
 
   done
@@ -732,7 +773,7 @@ main() {
   fi
   log_info "Processing $num_filtered_targets targets sequentially (out of $num_all_targets total targets parsed from config)."
 
-  declare -a results_array=()
+  declare -a results_array=0 # Use index 0 as count
   for i in $(seq 0 $((num_filtered_targets - 1))); do
     local target_item_json="${final_filtered_targets_json_array[$i]}"
     local target_name_for_progress
@@ -742,20 +783,24 @@ main() {
 
     local result_line
     result_line=$(process_target "$target_item_json")
-    if [[ -n "$result_line" ]]; then
-        # Only add non-header/non-error lines to results_array for table formatting
-        # Error lines like UNKNOWN_SERVICE are logged in process_target
-        if ! echo "$result_line" | grep -qE 'UNKNOWN_SERVICE'; then
-           results_array+=("$result_line")
-        fi
+    # Check the exit status of process_target
+    local process_status=$?
+    if [[ $process_status -eq 0 && -n "$result_line" ]]; then
+        # Only add successful result lines to results_array for table formatting
+        results_array[0]=$((results_array[0] + 1)) # Increment count
+        results_array+=("$result_line")
     else
-      log_error "Processing returned no result line for '$target_name_for_progress' (index $i)."
+      # process_target logged errors internally for UNKNOWN_SERVICE or processing failures
+      log_debug "Process_target failed for '$target_name_for_progress' (index $i), status $process_status."
     fi
   done
 
   printf "\n" >&2 # Newline after progress updates
 
-  if [[ ${#results_array[@]} -eq 0 ]]; then
+  local num_successful_results=${results_array[0]}
+  unset results_array[0] # Remove the count element
+
+  if [[ "$num_successful_results" -eq 0 ]]; then
      log_info "No successful results to report after processing."
      exit 0
   fi
@@ -774,12 +819,12 @@ main() {
   max_region_len=$(($(echo "Region" | wc -m) > max_region_len ? $(echo "Region" | wc -m) : max_region_len))
 
   for line in "${results_array[@]}"; do
-    # Use print to handle potential leading/trailing whitespace from IFS read
-    # Note: the raw_status_text is the 9th field, which we don't need for length calculation
-    local fields=($(echo "$line" | awk -F'|' '{print $1, $2, $3, $5, $6, $7, $8}'))
+    # Use awk to split fields robustly, handles pipes within fields if they weren't supposed to be there
+    # We need the raw fields before color codes for length calculation
+    local fields=($(echo "$line" | awk -F'|' '{gsub(/\x1B\[[0-9;]*m/, ""); print $1, $2, $3, $5, $6, $7, $8}'))
     local name="${fields[0]}" deployed="${fields[1]}" latest="${fields[2]}" service="${fields[3]}" tenant="${fields[4]}" env="${fields[5]}" region="${fields[6]}"
 
-    # Recalculate max lengths based on *raw* string length before colors are applied
+    # Recalculate max lengths based on *raw* string length after stripping color codes
     # Use {##...} and {%...} to remove potential color codes for length calculation
     ((${#name} > max_name_len)) && max_name_len=${#name}
     ((${#deployed} > max_deployed_len)) && max_deployed_len=${#deployed}
@@ -810,7 +855,8 @@ main() {
   printf "%${total_width}s\n" "" | tr " " "-"
 
   declare -a sorted_results=()
-  while IFS= read -r line; do sorted_results+=("$line"); done < <(
+  # Add the count back temporarily for sorting if needed, or just sort the array elements directly
+   while IFS= read -r line; do sorted_results+=("$line"); done < <(
     printf "%s\n" "${results_array[@]}" |
       awk -F'|' '
       # Function to assign a sort key based on raw status string (9th field)
@@ -828,6 +874,7 @@ main() {
       sort -t'|' -k1,1n -k6,6 -k7,7 -k8,8 -k5,5 | cut -d'|' -f2- # Cut the added status key
   )
 
+
   for line in "${sorted_results[@]}"; do
     local target_name_val deployed_val gh_ref_ver_val status_val service_val tenant_val env_val region_val _
     # Read into variables, discard the last field (raw_status_text)
@@ -837,12 +884,12 @@ main() {
       "$max_name_len" "$target_name_val" "$max_deployed_len" "$deployed_val" "$max_latest_len" "$gh_ref_ver_val" "$status_val"
   done
 
-  log_info "Cleaning up temporary directory: $TMP_DIR"
+  log_info "Cleaning up temporary directory: $TMP_DIR" >&2 # Log cleanup message to stderr
   if [[ -n "$TMP_DIR" ]] && [[ "$TMP_DIR" == /tmp/version_checker_* ]] && [[ -d "$TMP_DIR" ]]; then
-    log_debug "Cleaning up $TMP_DIR..."
+    log_debug "Removing $TMP_DIR..." >&2
     rm -rf "$TMP_DIR"
   else
-     log_debug "Cleanup skipped for TMP_DIR: '$TMP_DIR' (either empty, unexpected pattern, or non-existent)."
+     log_debug "Cleanup skipped for TMP_DIR: '$TMP_DIR' (either empty, unexpected pattern, or non-existent)." >&2
   fi
 }
 
