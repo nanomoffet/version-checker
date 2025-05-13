@@ -3,219 +3,228 @@ global:
   default_curl_timeout_seconds: 5
   default_version_jq_query: '.version // "N/A"'
   service_url_template: "https://{service_url_param}{region_url_param}.{effective_tenant}-{effective_env}.nbcuni.com/api/version"
-  github_release_cache_ttl_seconds: 1800 # 1 hour
+  github_release_cache_ttl_seconds: 1800 # 30 minutes
+
+defaults:
+  tenants: ["all"] # Default filter: can be ["all"] or a list e.g., ["peacock", "nowtv"]
+  environments: ["all"] # Default filter: can be ["all"] or a list e.g., ["dev", "prod"]
+  regions: ["all"] # Default filter: can be ["all"] or a list e.g., ["-us-east-2", "-eu-central-1"]
+  services: ["all"] # Default filter: can be ["all"] or a list of service_keys e.g., ["ingestor-service"]
 
 # List of all services and their GitHub repositories
-# The key (e.g., "ingestor-service") is used to link targets to their repo.
-# The `url_param_default` is the default segment for {service_url_param} in the URL.
+# url_param_default set based on Earth tenant rules. Overrides used where needed.
 services_repo_map:
   ingestor-service:
     display_name: "SLE Manager Ingestor"
     repo: "NBCUDTC/slemanager-ingestor-src"
-    url_param_default: "slemanager-ingestor"
+    url_param_default: "sle-ingester" # Earth default
   slemanager-db-service:
     display_name: "SLE Manager DB Service"
     repo: "NBCUDTC/slemanager-dbservice-src"
-    url_param_default: "db-service"
+    url_param_default: "db-service" # Earth default
   slemanager-technical-metadata-processor:
     display_name: "SLE Manager Technical Metadata Processor"
     repo: "NBCUDTC/slemanager-technical-metadata-processor-src"
-    url_param_default: "sle-technical-metadata"
+    url_param_default: "sle-technical-metadata" # Earth default
   slemanager-technical-metadata-publisher:
     display_name: "SLE Manager Technical Metadata Publisher"
     repo: "NBCUDTC/slemanager-technical-metadata-publisher-src"
-    url_param_default: "slemanager-technical-metadata-publisher"
+    url_param_default: "slemanager-technical-metadata-publisher" # Earth default
   slemanager-canonical-metadata-processor:
     display_name: "SLE Manager Canonical Metadata Processor"
     repo: "NBCUDTC/slemanager-canonical-metadata-processor-src"
-    url_param_default: "slemanager-canonical-metadata-processor"
+    url_param_default: "sle-canonical-metadata-processor" # Earth default
   slemanager-canonical-metadata-publisher:
     display_name: "SLE Manager Canonical Metadata Publisher"
     repo: "NBCUDTC/slemanager-canonical-metadata-publisher-src"
-    url_param_default: "slemanager-canonical-metadata-publisher"
+    url_param_default: "sle-canonical-metadata-publisher" # Earth default
   slemanager-job-watcher:
     display_name: "SLE Manager Job Watcher"
     repo: "NBCUDTC/slemanager-job-watcher-src"
-    url_param_default: "slemanager-job-watcher"
+    url_param_default: "slemanager-job-watcher" # Earth default
   slemanager-job-coordinator:
     display_name: "SLE Manager Job Coordinator"
     repo: "NBCUDTC/slemanager-job-coordinator-src"
-    url_param_default: "slemanager-job-coordinator"
+    url_param_default: "slemanager-job-coordinator" # Earth default
   slemanager-encoder-worker:
     display_name: "SLE Manager Encoder Worker"
     repo: "NBCUDTC/slemanager-encoder-worker-src"
-    url_param_default: "slemanager-encoder-worker"
+    url_param_default: "slemanager-encoder-worker" # Earth default
   slemanager-encoder-planner:
     display_name: "SLE Manager Encoder Planner"
     repo: "NBCUDTC/slemanager-encoder-planner-src"
-    url_param_default: "slemanager-encoder-planner"
+    url_param_default: "slemanager-encoder-planner" # Earth default
 
 # Static list of all targets to check.
-# The 'tenant' field reflects the 'effective_tenant' for URL construction.
-# region_url_param is determined by the new rules.
+# region_url_param includes '-' prefix where applicable.
+# service_url_param_override used ONLY when tenant rule differs from url_param_default.
 targets:
   # --- Service: SLEManager Ingestor (ingestor-service) ---
-  # Tenant: earth (effective vod for dev)
+  # Default: sle-ingester
+  # Tenant: earth (effective vod for dev) -> Uses default
   - name: "Ingestor (earth-dev, us-east-2)"
     service_key: "ingestor-service"
     environment: "dev"
-    tenant: "vod" # Effective tenant
+    tenant: "vod"
     region_url_param: ""
     region_display_name: "US East (Ohio)"
-    service_url_param_override: "sle-ingester"
   - name: "Ingestor (earth-dev, us-west-2)"
     service_key: "ingestor-service"
     environment: "dev"
-    tenant: "vod" # Effective tenant
+    tenant: "vod"
     region_url_param: ""
     region_display_name: "US West (Oregon)"
-    service_url_param_override: "sle-ingester"
   - name: "Ingestor (earth-stage, us-east-2)"
     service_key: "ingestor-service"
     environment: "stage"
     tenant: "earth"
     region_url_param: ""
     region_display_name: "US East (Ohio)"
-    service_url_param_override: "sle-ingester"
   - name: "Ingestor (earth-stage, us-west-2)"
     service_key: "ingestor-service"
     environment: "stage"
     tenant: "earth"
     region_url_param: ""
     region_display_name: "US West (Oregon)"
-    service_url_param_override: "sle-ingester"
   - name: "Ingestor (earth-prod, us-east-2)"
     service_key: "ingestor-service"
     environment: "prod"
     tenant: "earth"
     region_url_param: ""
     region_display_name: "US East (Ohio)"
-    service_url_param_override: "sle-ingester"
   - name: "Ingestor (earth-prod, us-west-2)"
     service_key: "ingestor-service"
     environment: "prod"
     tenant: "earth"
     region_url_param: ""
     region_display_name: "US West (Oregon)"
-  # Tenant: nowtv
+  # Tenant: nowtv -> Requires override (slemanager-ingestor)
   - name: "Ingestor (nowtv-dev, us-east-2)"
     service_key: "ingestor-service"
     environment: "dev"
     tenant: "nowtv"
     region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
+    service_url_param_override: "slemanager-ingestor" # Differs from default
   - name: "Ingestor (nowtv-dev, us-west-2)"
     service_key: "ingestor-service"
     environment: "dev"
     tenant: "nowtv"
     region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
+    service_url_param_override: "slemanager-ingestor" # Differs from default
   - name: "Ingestor (nowtv-stage, eu-central-1)"
     service_key: "ingestor-service"
     environment: "stage"
     tenant: "nowtv"
     region_url_param: "-eu-central-1"
     region_display_name: "EU (Frankfurt)"
+    service_url_param_override: "slemanager-ingestor" # Differs from default
   - name: "Ingestor (nowtv-stage, eu-west-1)"
     service_key: "ingestor-service"
     environment: "stage"
     tenant: "nowtv"
     region_url_param: "-eu-west-1"
     region_display_name: "EU (Ireland)"
+    service_url_param_override: "slemanager-ingestor" # Differs from default
   - name: "Ingestor (nowtv-prod, eu-central-1)"
     service_key: "ingestor-service"
     environment: "prod"
     tenant: "nowtv"
     region_url_param: "-eu-central-1"
     region_display_name: "EU (Frankfurt)"
+    service_url_param_override: "slemanager-ingestor" # Differs from default
   - name: "Ingestor (nowtv-prod, eu-west-1)"
     service_key: "ingestor-service"
     environment: "prod"
     tenant: "nowtv"
     region_url_param: "-eu-west-1"
     region_display_name: "EU (Ireland)"
-  # Tenant: peacock
+    service_url_param_override: "slemanager-ingestor" # Differs from default
+  # Tenant: peacock -> Requires override (slemanager-ingestor)
   - name: "Ingestor (peacock-dev, us-east-2)"
     service_key: "ingestor-service"
     environment: "dev"
     tenant: "peacock"
     region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
+    service_url_param_override: "slemanager-ingestor" # ADDED (differs from default)
   - name: "Ingestor (peacock-dev, us-west-2)"
     service_key: "ingestor-service"
     environment: "dev"
     tenant: "peacock"
     region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
+    service_url_param_override: "slemanager-ingestor" # ADDED (differs from default)
   - name: "Ingestor (peacock-stage, us-east-2)"
     service_key: "ingestor-service"
     environment: "stage"
     tenant: "peacock"
     region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
+    service_url_param_override: "slemanager-ingestor" # ADDED (differs from default)
   - name: "Ingestor (peacock-stage, us-west-2)"
     service_key: "ingestor-service"
     environment: "stage"
     tenant: "peacock"
     region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
+    service_url_param_override: "slemanager-ingestor" # ADDED (differs from default)
   - name: "Ingestor (peacock-prod, us-east-2)"
     service_key: "ingestor-service"
     environment: "prod"
     tenant: "peacock"
     region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
+    service_url_param_override: "slemanager-ingestor" # ADDED (differs from default)
   - name: "Ingestor (peacock-prod, us-west-2)"
     service_key: "ingestor-service"
     environment: "prod"
     tenant: "peacock"
     region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
+    service_url_param_override: "slemanager-ingestor" # ADDED (differs from default)
+
   # --- Service: SLEManager DB Service (slemanager-db-service) ---
-  # Tenant: earth (effective vod for dev)
+  # Default: db-service
+  # Tenant: earth (effective vod for dev) -> Uses default
   - name: "DB Service (earth-dev, us-east-2)"
     service_key: "slemanager-db-service"
     environment: "dev"
     tenant: "vod"
     region_url_param: ""
-    service_url_param_override: "db-service"
     region_display_name: "US East (Ohio)"
   - name: "DB Service (earth-dev, us-west-2)"
     service_key: "slemanager-db-service"
     environment: "dev"
     tenant: "vod"
     region_url_param: ""
-    service_url_param_override: "db-service"
     region_display_name: "US West (Oregon)"
   - name: "DB Service (earth-stage, us-east-2)"
     service_key: "slemanager-db-service"
     environment: "stage"
     tenant: "earth"
     region_url_param: ""
-    service_url_param_override: "db-service"
     region_display_name: "US East (Ohio)"
   - name: "DB Service (earth-stage, us-west-2)"
     service_key: "slemanager-db-service"
     environment: "stage"
     tenant: "earth"
     region_url_param: ""
-    service_url_param_override: "db-service"
     region_display_name: "US West (Oregon)"
   - name: "DB Service (earth-prod, us-east-2)"
     service_key: "slemanager-db-service"
     environment: "prod"
     tenant: "earth"
     region_url_param: ""
-    service_url_param_override: "db-service"
     region_display_name: "US East (Ohio)"
   - name: "DB Service (earth-prod, us-west-2)"
     service_key: "slemanager-db-service"
     environment: "prod"
     tenant: "earth"
     region_url_param: ""
-    service_url_param_override: "db-service"
     region_display_name: "US West (Oregon)"
-  # Tenant: nowtv
+  # Tenant: nowtv -> Uses default
   - name: "DB Service (nowtv-dev, us-east-2)"
     service_key: "slemanager-db-service"
     environment: "dev"
@@ -227,7 +236,7 @@ targets:
     environment: "dev"
     tenant: "nowtv"
     region_url_param: "-us-west-2"
-  #   region_display_name: "US West (Oregon)"
+    region_display_name: "US West (Oregon)"
   - name: "DB Service (nowtv-stage, eu-central-1)"
     service_key: "slemanager-db-service"
     environment: "stage"
@@ -252,50 +261,53 @@ targets:
     tenant: "nowtv"
     region_url_param: "-eu-west-1"
     region_display_name: "EU (Ireland)"
-  # Tenant: peacock
+  # Tenant: peacock -> Requires override (slemanager-dbservice)
   - name: "DB Service (peacock-dev, us-east-2)"
     service_key: "slemanager-db-service"
     environment: "dev"
     tenant: "peacock"
     region_url_param: "-us-east-2"
-    service_url_param_override: "slemanager-dbservice"
+    service_url_param_override: "slemanager-dbservice" # ADDED (differs from default)
     region_display_name: "US East (Ohio)"
   - name: "DB Service (peacock-dev, us-west-2)"
     service_key: "slemanager-db-service"
     environment: "dev"
     tenant: "peacock"
     region_url_param: "-us-west-2"
-    service_url_param_override: "slemanager-dbservice"
+    service_url_param_override: "slemanager-dbservice" # ADDED (differs from default)
     region_display_name: "US West (Oregon)"
   - name: "DB Service (peacock-stage, us-east-2)"
     service_key: "slemanager-db-service"
     environment: "stage"
     tenant: "peacock"
     region_url_param: "-us-east-2"
-    service_url_param_override: "slemanager-dbservice"
+    service_url_param_override: "slemanager-dbservice" # ADDED (differs from default)
     region_display_name: "US East (Ohio)"
   - name: "DB Service (peacock-stage, us-west-2)"
     service_key: "slemanager-db-service"
     environment: "stage"
     tenant: "peacock"
     region_url_param: "-us-west-2"
-    service_url_param_override: "slemanager-dbservice"
+    service_url_param_override: "slemanager-dbservice" # ADDED (differs from default)
     region_display_name: "US West (Oregon)"
   - name: "DB Service (peacock-prod, us-east-2)"
     service_key: "slemanager-db-service"
     environment: "prod"
     tenant: "peacock"
     region_url_param: "-us-east-2"
-    service_url_param_override: "slemanager-dbservice"
+    service_url_param_override: "slemanager-dbservice" # ADDED (differs from default)
     region_display_name: "US East (Ohio)"
   - name: "DB Service (peacock-prod, us-west-2)"
     service_key: "slemanager-db-service"
     environment: "prod"
     tenant: "peacock"
     region_url_param: "-us-west-2"
-    service_url_param_override: "slemanager-dbservice"
+    service_url_param_override: "slemanager-dbservice" # ADDED (differs from default)
     region_display_name: "US West (Oregon)"
-  # --- Service: SLEManager Technical Metadata (slemanager-technical-metadata) ---
+
+  # --- Service: SLEManager Technical Metadata Processor (slemanager-technical-metadata-processor) ---
+  # Default: sle-technical-metadata
+  # All tenants use default
   # Tenant: earth (effective vod for dev)
   - name: "Technical Metadata Processor (earth-dev, us-east-2)"
     service_key: "slemanager-technical-metadata-processor"
@@ -303,11 +315,11 @@ targets:
     tenant: "vod"
     region_url_param: ""
     region_display_name: "US East (Ohio)"
-  - name: "Technical Metadata (earth-dev, us-west-2)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (earth-dev, us-west-2)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "dev"
     tenant: "vod"
-    region_url_param: "us-west-2"
+    region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
   - name: "Technical Metadata Processor (earth-stage, us-east-2)"
     service_key: "slemanager-technical-metadata-processor"
@@ -315,99 +327,98 @@ targets:
     tenant: "earth"
     region_url_param: ""
     region_display_name: "US East (Ohio)"
-  - name: "Technical Metadata (earth-stage, eu-central-1)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (earth-stage, eu-central-1)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "stage"
     tenant: "earth"
-    region_url_param: "eu-central-1"
+    region_url_param: "-eu-central-1"
     region_display_name: "EU (Frankfurt)"
   - name: "Technical Metadata Processor (earth-prod, us-east-2)"
     service_key: "slemanager-technical-metadata-processor"
     environment: "prod"
     tenant: "earth"
-    region_url_param: "us-east-2"
+    region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
-  - name: "Technical Metadata (earth-prod, eu-central-1)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (earth-prod, eu-central-1)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "prod"
     tenant: "earth"
-    region_url_param: "eu-central-1"
+    region_url_param: "-eu-central-1"
     region_display_name: "EU (Frankfurt)"
   # Tenant: nowtv
   - name: "Technical Metadata Processor (nowtv-dev, us-east-2)"
     service_key: "slemanager-technical-metadata-processor"
     environment: "dev"
     tenant: "nowtv"
-    region_url_param: "us-east-2"
+    region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
-  - name: "Technical Metadata (nowtv-dev, us-west-2)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (nowtv-dev, us-west-2)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "dev"
     tenant: "nowtv"
-    region_url_param: "us-west-2"
+    region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
   - name: "Technical Metadata Processor (nowtv-stage, eu-central-1)"
     service_key: "slemanager-technical-metadata-processor"
     environment: "stage"
     tenant: "nowtv"
-    region_url_param: "eu-central-1"
+    region_url_param: "-eu-central-1"
     region_display_name: "EU (Frankfurt)"
-  - name: "Technical Metadata (nowtv-stage, eu-west-1)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (nowtv-stage, eu-west-1)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "stage"
     tenant: "nowtv"
-    region_url_param: "eu-west-1"
+    region_url_param: "-eu-west-1"
     region_display_name: "EU (Ireland)"
   - name: "Technical Metadata Processor (nowtv-prod, eu-central-1)"
     service_key: "slemanager-technical-metadata-processor"
     environment: "prod"
     tenant: "nowtv"
-    region_url_param: "eu-central-1"
+    region_url_param: "-eu-central-1"
     region_display_name: "EU (Frankfurt)"
-  - name: "Technical Metadata (nowtv-prod, eu-west-1)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (nowtv-prod, eu-west-1)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "prod"
     tenant: "nowtv"
-    region_url_param: "eu-west-1"
+    region_url_param: "-eu-west-1"
     region_display_name: "EU (Ireland)"
   # Tenant: peacock
   - name: "Technical Metadata Processor (peacock-dev, us-east-2)"
     service_key: "slemanager-technical-metadata-processor"
     environment: "dev"
     tenant: "peacock"
-    region_url_param: "us-east-2"
+    region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
-  - name: "Technical Metadata (peacock-dev, us-west-2)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (peacock-dev, us-west-2)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "dev"
     tenant: "peacock"
-    region_url_param: "us-west-2"
+    region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
   - name: "Technical Metadata Processor (peacock-stage, us-east-2)"
     service_key: "slemanager-technical-metadata-processor"
     environment: "stage"
     tenant: "peacock"
-    region_url_param: "us-east-2"
+    region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
-  - name: "Technical Metadata (peacock-stage, us-west-2)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (peacock-stage, us-west-2)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "stage"
     tenant: "peacock"
-    region_url_param: "us-west-2"
+    region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
   - name: "Technical Metadata Processor (peacock-prod, us-east-2)"
     service_key: "slemanager-technical-metadata-processor"
     environment: "prod"
     tenant: "peacock"
-    region_url_param: "us-east-2"
+    region_url_param: "-us-east-2"
     region_display_name: "US East (Ohio)"
-  - name: "Technical Metadata (peacock-prod, us-west-2)"
-    service_key: "slemanager-technical-metadata"
+  - name: "Technical Metadata Processor (peacock-prod, us-west-2)"
+    service_key: "slemanager-technical-metadata-processor"
     environment: "prod"
     tenant: "peacock"
-    region_url_param: "us-west-2"
+    region_url_param: "-us-west-2"
     region_display_name: "US West (Oregon)"
-
   # --- Service: SLEManager Technical Metadata Publisher (slemanager-technical-metadata-publisher) ---
   # Tenant: earth (effective vod for dev)
   - name: "Technical Metadata Publisher (earth-dev, us-east-2)"
