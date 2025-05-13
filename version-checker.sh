@@ -31,9 +31,9 @@ declare -A SERVICES_REPO_MAP_DATA
 declare -A GITHUB_LATEST_VERSION_CACHE # In-memory cache for GH releases for *this run*
 declare -A USER_SELECTED_GH_VERSIONS   # Stores service_key -> user_chosen_tag_for_comparison
 
-# Filters (used when REGION_FILTER_MODE is 'off' or no -r flag is used)
+# Filters (used when REGION_FILTER_MODE is 'off' or no -r flag is used, EXCEPT for region filter itself in 'off' mode)
 declare -a SELECTED_TENANTS
-declare -a SELECTED_REGIONS
+declare -a SELECTED_REGIONS # Still holds default/interactive selection for info/potential future use, but *not* used for filtering when REGION_FILTER_MODE is 'off'
 declare -a SELECTED_ENVIRONMENTS
 declare -a SELECTED_SERVICES
 
@@ -94,7 +94,7 @@ print_usage() {
   echo "  -v, --verbose     Show service URLs being called (concise list)."
   echo "  -r <region_mode>  Specify region selection mode. Overrides interactive/default region filter."
   echo "                    <region_mode> can be: 'off', 'primary', 'secondary', 'all'."
-  echo "                    'off': Use default/interactive region filter (default). Region URL param is empty in the URL."
+  echo "                    'off': DO NOT filter by region. Region URL param is empty in the URL."
   echo "                    'primary': Select the first matching target instance for each service/tenant/env combination."
   echo "                    'secondary': Select the second matching target instance for each service/tenant/env combination."
   echo "                    'all': Include all matching targets regardless of region."
@@ -178,7 +178,7 @@ parse_defaults_from_config() {
   # Use // "all" default directly with yq
   mapfile -t SELECTED_TENANTS < <(yq e '.defaults.tenants[] // "all"' "$CONFIG_FILE_TO_USE")
   mapfile -t SELECTED_ENVIRONMENTS < <(yq e '.defaults.environments[] // "all"' "$CONFIG_FILE_TO_USE")
-  mapfile -t SELECTED_REGIONS < <(yq e '.defaults.regions[] // "all"' "$CONFIG_FILE_TO_USE")
+  mapfile -t SELECTED_REGIONS < <(yq e '.defaults.regions[] // "all"' "$CONFIG_FILE_TO_USE") # Load default regions, but note they aren't used for filtering in 'off' mode
   mapfile -t SELECTED_SERVICES < <(yq e '.defaults.services[] // "all"' "$CONFIG_FILE_TO_USE")
 
   # Trim whitespace and handle potential 'null' or empty results from yq
@@ -190,19 +190,20 @@ parse_defaults_from_config() {
   # Ensure 'all' is a single element if present and trim any null/empty entries
   SELECTED_TENANTS=($(echo "${SELECTED_TENANTS[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
   SELECTED_ENVIRONMENTS=($(echo "${SELECTED_ENVIRONMENTS[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
+  # For regions in off mode, the specific values don't matter for filtering, but having "all" is a consistent default state.
   SELECTED_REGIONS=($(echo "${SELECTED_REGIONS[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
   SELECTED_SERVICES=($(echo "${SELECTED_SERVICES[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
 
 
    if [[ "${SELECTED_TENANTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_TENANTS=("all"); fi
    if [[ "${SELECTED_ENVIRONMENTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_ENVIRONMENTS=("all"); fi
-   # Note: SELECTED_REGIONS default handling needs care in interactive mode when REGION_FILTER_MODE is off
+   if [[ "${SELECTED_REGIONS[*]}" =~ (^| )all( |$) ]]; then SELECTED_REGIONS=("all"); fi # Default regions to "all" if config is empty/null/only whitespace
    if [[ "${SELECTED_SERVICES[*]}" =~ (^| )all( |$) ]]; then SELECTED_SERVICES=("all"); fi
 
-   # Handle case where defaults were empty/null, ensure they become "all"
+   # Handle case where defaults were empty/null *after* trimming, ensure they become "all"
    if [[ ${#SELECTED_TENANTS[@]} -eq 0 ]]; then SELECTED_TENANTS=("all"); fi
    if [[ ${#SELECTED_ENVIRONMENTS[@]} -eq 0 ]]; then SELECTED_ENVIRONMENTS=("all"); fi
-   if [[ ${#SELECTED_REGIONS[@]} -eq 0 ]]; then SELECTED_REGIONS=("all"); fi # Default regions to "all" if config is empty/null
+   if [[ ${#SELECTED_REGIONS[@]} -eq 0 ]]; then SELECTED_REGIONS=("all"); fi
    if [[ ${#SELECTED_SERVICES[@]} -eq 0 ]]; then SELECTED_SERVICES=("all"); fi
 
 
@@ -338,11 +339,11 @@ get_cached_or_fetch_latest_gh_release() {
 
 
 get_deployed_version() {
-  local service_url_param="$1" region_url_param="$2" effective_tenant="$3" effective_env="$4" jq_query="$5"
+  local service_url_param="$1" region_url_param_for_url="$2" effective_tenant="$3" effective_env="$4" jq_query="$5"
   local url="$SERVICE_URL_TEMPLATE"
   url="${url//\{service_url_param\}/$service_url_param}"
-  # IMPORTANT CHANGE: Use the passed region_url_param for URL construction
-  url="${url//\{region_url_param\}/$region_url_param}"
+  # Use the passed region_url_param_for_url for URL construction
+  url="${url//\{region_url_param\}/$region_url_param_for_url}"
   url="${url//\{effective_tenant\}/$effective_tenant}"
   url="${url//\{effective_env\}/$effective_env}"
 
@@ -415,23 +416,27 @@ run_interactive_config() {
 
   # Handle Region Selection based on REGION_FILTER_MODE
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
-      log_info "Region filter mode: '$REGION_FILTER_MODE'. Select regions to query (current defaults: ${SELECTED_REGIONS[*]}):"
-      # Only show region selection if the mode is 'off'
+      # When REGION_FILTER_MODE is 'off', region is NOT used for filtering.
+      # However, interactive mode *allows* the user to set default filters
+      # which might be used later if the mode was changed.
+      # So, we still prompt, but explain its limited effect in 'off' mode.
+      log_info "Region filter mode: '$REGION_FILTER_MODE'. Region selection below sets default, but will NOT filter targets. Region URL param will be empty."
       if [[ ${#all_regions[@]} -gt 0 ]]; then
           mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit "${all_regions[@]}")
-          # IMPORTANT FIX: If interactive region selection is empty (user cancelled/selected none),
-          # default SELECTED_REGIONS to "all" so the filter doesn't exclude everything.
+          # If interactive region selection is empty (user cancelled/selected none),
+          # set SELECTED_REGIONS to "all" as a consistent default state for the filter variable.
           if [[ ${#SELECTED_REGIONS_GUM[@]} -eq 0 ]]; then
-              log_debug "Interactive region selection was empty. Defaulting SELECTED_REGIONS to 'all'."
+              log_debug "Interactive region selection was empty. Defaulting SELECTED_REGIONS filter variable to 'all'."
               SELECTED_REGIONS=("all")
           else
-              SELECTED_REGIONS=("${SELECTED_REGIONS_GUM[@]}") # Use the gum selection
+              SELECTED_REGIONS=("${SELECTED_REGIONS_GUM[@]}") # Use the gum selection for the filter variable
           fi
       else
-          log_info "No regions found in config for interactive selection. Defaulting SELECTED_REGIONS to 'all'."
-          SELECTED_REGIONS=("all") # No regions to select from, default to all
+          log_info "No regions found in config for interactive selection. Defaulting SELECTED_REGIONS filter variable to 'all'."
+          SELECTED_REGIONS=("all") # No regions to select from, default to all for the filter variable
       fi
   else
+      # For primary, secondary, all modes, interactive region selection is skipped.
       log_info "Region selection via gum skipped because -r '$USER_SPECIFIED_REGION_VALUE' was used (mode '$REGION_FILTER_MODE')."
       # SELECTED_REGIONS will retain the default value loaded before this function,
       # but its value is ignored by the main filter loop when mode is not 'off'.
@@ -460,7 +465,7 @@ run_interactive_config() {
   # For each *selected* service, prompt for GitHub version UNLESS 'all' services selected
   local effective_selected_services=("${SELECTED_SERVICES[@]}")
   if [[ "${effective_selected_services[0]}" == "all" ]]; then
-     # If 'all' is selected, use all configured service keys for the GH prompt step
+     # If 'all' is selected, use all configured service keys from the map for the GH prompt step
      effective_selected_services=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
   fi
 
@@ -469,7 +474,7 @@ run_interactive_config() {
       # Ensure the service key is valid and has repo info before prompting for GH version
       if [[ -v SERVICES_REPO_MAP_DATA["$service_key_to_configure,repo"] ]]; then
         local repo_for_service="${SERVICES_REPO_MAP_DATA["$service_key_to_configure,repo"]}"
-        local display_name_for_service="${SERVICES_REPO_MAP_DATA["$service_key_to_name"]:-$service_key_to_configure}"
+        local display_name_for_service="${SERVICES_REPO_MAP_DATA["$service_key_to_configure,display_name"]:-$service_key_to_configure}"
 
         echo "Fetching 5 latest releases for $display_name_for_service ($repo_for_service)..."
         mapfile -t latest_5_tags < <(get_latest_github_release_tags "$repo_for_service" 5)
@@ -509,7 +514,7 @@ process_target() {
   service_key=$(echo "$target_json" | jq -r '.service_key')
   environment=$(echo "$target_json" | jq -r '.environment')
   tenant=$(echo "$target_json" | jq -r '.tenant')
-  # Read the configured region_url_param from the target JSON
+  # Read the configured region_url_param from the target JSON (used for report, maybe for URL if not 'off')
   region_url_param=$(echo "$target_json" | jq -r '.region_url_param // "null"')
   service_url_param_override=$(echo "$target_json" | jq -r '.service_url_param_override // ""')
 
@@ -546,19 +551,19 @@ process_target() {
   fi
 
 
-  # --- Apply REGION_FILTER_MODE 'off' logic for URL construction ---
-  # If the region mode is 'off', the URL template should use an empty string
-  # for the region placeholder, regardless of the target's configured region.
-  local effective_region_url_param="$region_url_param" # Default to the configured region from config
+  # --- Determine the actual region URL param to use for CURL ---
+  # If the region mode is 'off', the URL template should use an empty string.
+  # Otherwise, use the region_url_param from the target config.
+  local region_url_param_for_curl="$region_url_param" # Default to the configured region from config
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
-      log_debug "REGION_FILTER_MODE is 'off'. Setting effective_region_url_param to empty string for URL construction."
-      effective_region_url_param="" # Override for URL building
+      log_debug "REGION_FILTER_MODE is 'off'. Setting region_url_param_for_curl to empty string for URL construction."
+      region_url_param_for_curl="" # Override for URL building
   fi
-  # --- End of REGION_FILTER_MODE 'off' logic ---
+  # --- End of region URL param logic ---
 
   local deployed_version
   # Pass the *effective* region parameter to the function that builds the URL
-  deployed_version=$(get_deployed_version "$effective_service_url_param" "$effective_region_url_param" "$tenant" "$environment" "$DEFAULT_VERSION_JQ_QUERY")
+  deployed_version=$(get_deployed_version "$effective_service_url_param" "$region_url_param_for_curl" "$tenant" "$environment" "$DEFAULT_VERSION_JQ_QUERY")
 
   local status_text raw_status_text
   if [[ "$github_reference_version" == ERR_GH* || "$github_reference_version" == "N/A_GH_FETCH" ]]; then
@@ -652,8 +657,6 @@ main() {
     log_info "Using default filters from config."
     # If not interactive and no specific GH versions selected (which is the default behavior without -c),
     # ensure the 'latest' marker is set for *all* configured services from the map data.
-    # This is already handled by parse_defaults_from_config and the logic in run_interactive_config,
-    # but explicitly ensure here if not interactive.
     # Get all configured service keys from the map
     local all_configured_service_keys=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
     for skey in "${all_configured_service_keys[@]}"; do
@@ -681,12 +684,11 @@ main() {
   declare -A service_tenant_env_instance_count
 
   log_info "Filter criteria: Tenants=[${SELECTED_TENANTS[*]}], Envs=[${SELECTED_ENVIRONMENTS[*]}], Services=[${SELECTED_SERVICES[*]}]"
+  log_info "Region mode: '$REGION_FILTER_MODE'."
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
-      # When mode is 'off' (default or -r off), use SELECTED_REGIONS for filtering
-      log_info "Region filter mode: '$REGION_FILTER_MODE'. Filtering regions=[${SELECTED_REGIONS[*]}]. For matching targets, Region URL parameter will be empty."
+      log_info "Region filtering is OFF. All targets matching other filters will be included. Region URL parameter will be empty for CURL."
   else
-      # When mode is 'primary', 'secondary', or 'all', override region filter
-      log_info "Region filter mode: '$REGION_FILTER_MODE'. Interactive/default region filter ignored. Region filtering/selection handled by mode."
+      log_info "Region filtering/selection is active based on mode '$REGION_FILTER_MODE'."
   fi
 
 
@@ -713,7 +715,7 @@ main() {
     fi
 
 
-    # Apply Tenant, Environment, and Service filters
+    # Apply Tenant, Environment, and Service filters (Always applied)
     local tenant_match=false env_match=false service_match=false
     if [[ "${SELECTED_TENANTS[0]}" == "all" || " ${SELECTED_TENANTS[*]} " =~ " $t_tenant " ]]; then tenant_match=true; fi
     if [[ "${SELECTED_ENVIRONMENTS[0]}" == "all" || " ${SELECTED_ENVIRONMENTS[*]} " =~ " $t_env " ]]; then env_match=true; fi
@@ -724,23 +726,20 @@ main() {
       continue # Failed initial filters
     fi
 
-    # Apply Region filter/selection based on REGION_FILTER_MODE
+    # Apply Region filter/selection based on REGION_FILTER_MODE (Applied *after* other filters pass)
     local region_filter_passed=false
-    local count_key="${t_service_key}-${t_tenant}-${t_env}" # Key for instance counting
+    local count_key="${t_service_key}-${t_tenant}-${t_env}" # Key for instance counting for primary/secondary
 
     case "$REGION_FILTER_MODE" in
       off)
-        # When mode is 'off', filter based on SELECTED_REGIONS from config/interactive
-        # Check if the current target's region is in the SELECTED_REGIONS list (or if SELECTED_REGIONS is "all").
-        if [[ "${SELECTED_REGIONS[0]}" == "all" || " ${SELECTED_REGIONS[*]} " =~ " $t_region " ]]; then
-             region_filter_passed=true;
-        else
-             log_debug "Skipping target '$t_name' (index $i): Region '$t_region' not in SELECTED_REGIONS for mode 'off'."
-        fi
+        # When mode is 'off', the region filter is skipped. All targets matching other filters pass the region filter stage.
+        region_filter_passed=true
+        log_debug "Target '$t_name' (index $i) passed region filter (mode 'off')."
         ;;
       all)
-        # Region filter is effectively off, all regions for this service/tenant/env combination match
+        # When mode is 'all', all targets matching other filters also pass the region filter stage.
         region_filter_passed=true
+        log_debug "Target '$t_name' (index $i) passed region filter (mode 'all')."
         ;;
       primary|secondary)
         # Count instances for this service/tenant/env combination encountered so far in the loop
@@ -749,8 +748,10 @@ main() {
 
         if [[ "$REGION_FILTER_MODE" == "primary" && "$current_instance_number" -eq 1 ]]; then
           region_filter_passed=true
+          log_debug "Target '$t_name' (index $i) passed region filter (mode 'primary', instance #$current_instance_number)."
         elif [[ "$REGION_FILTER_MODE" == "secondary" && "$current_instance_number" -eq 2 ]]; then
           region_filter_passed=true
+          log_debug "Target '$t_name' (index $i) passed region filter (mode 'secondary', instance #$current_instance_number)."
         else
            log_debug "Skipping target '$t_name' (index $i): Instance #$current_instance_number for $count_key does not match region_mode '$REGION_FILTER_MODE'."
            region_filter_passed=false # Skip instances beyond the primary/secondary
@@ -760,7 +761,7 @@ main() {
 
     # If all filters pass, add to the final list for processing
     if $region_filter_passed; then
-      log_debug "Including target '$t_name' (index $i): Filters passed."
+      log_debug "Including target '$t_name' (index $i) for processing."
       final_filtered_targets_json_array+=("$current_target_json")
     fi
 
