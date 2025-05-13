@@ -436,7 +436,10 @@ REGION_FLAG="off"
 # Parse our new CLI flags in addition to the others
 main() {
   INTERACTIVE_CONFIG_MODE=false
-  # Handle new flags -v/--verbose, --region <val>
+  SHOW_VERBOSE_URLS=false
+  REGION_FLAG="off"
+
+  # --- Enhanced CLI argument parsing ---
   while [[ $# -gt 0 ]]; do
     key="$1"
     case $key in
@@ -505,38 +508,44 @@ main() {
     t_service_key=$(echo "$current_target_json" | jq -r '.service_key')
 
     # Apply filters
-  # -- Filter the targets according to REGION_FLAG --
+    local tenant_match=false env_match=false region_match=false service_match=false
+    if [[ "${SELECTED_TENANTS[0]}" == "all" || " ${SELECTED_TENANTS[*]} " =~ " $t_tenant " ]]; then tenant_match=true; fi
+    if [[ "${SELECTED_ENVIRONMENTS[0]}" == "all" || " ${SELECTED_ENVIRONMENTS[*]} " =~ " $t_env " ]]; then env_match=true; fi
+    if [[ "${SELECTED_REGIONS[0]}" == "all" || " ${SELECTED_REGIONS[*]} " =~ " $t_region " ]]; then region_match=true; fi
+    if [[ "${SELECTED_SERVICES[0]}" == "all" || " ${SELECTED_SERVICES[*]} " =~ " $t_service_key " ]]; then service_match=true; fi
+
+    if $tenant_match && $env_match && $region_match && $service_match; then
+      filtered_targets_json_array+=("$current_target_json")
+    fi
+  done
+
+  # --- Apply region filtering ---
   declare -a targets_after_region=()
+  declare -A seen_primary_combo
+  declare -A secondary_count_combo
   for target in "${filtered_targets_json_array[@]}"; do
     region_val=$(echo "$target" | jq -r '.region_url_param // ""')
+    skey=$(echo "$target" | jq -r '.service_key')
+    env=$(echo "$target" | jq -r '.environment')
+    tenant=$(echo "$target" | jq -r '.tenant')
+    combo_id="${skey}|${env}|${tenant}"
+
     case "$REGION_FLAG" in
       "off")
         targets_after_region+=("$target")
         ;;
       "primary")
-        # Assume first region instance in sorted list is "primary"
-        # See if this is the first entry for this service/env/tenant combo
-        skey=$(echo "$target" | jq -r '.service_key')
-        env=$(echo "$target" | jq -r '.environment')
-        tenant=$(echo "$target" | jq -r '.tenant')
-        combo_id="${skey}|${env}|${tenant}"
-        if [[ -z "${_seen_combos_primary[$combo_id]}" ]]; then
+        if [[ -z "${seen_primary_combo[$combo_id]}" ]]; then
           targets_after_region+=("$target")
-          _seen_combos_primary["$combo_id"]=1
+          seen_primary_combo["$combo_id"]=1
         fi
         ;;
       "secondary")
-        # Allow a second entry per combo (assumes sorted input)
-        skey=$(echo "$target" | jq -r '.service_key')
-        env=$(echo "$target" | jq -r '.environment')
-        tenant=$(echo "$target" | jq -r '.tenant')
-        combo_id="${skey}|${env}|${tenant}"
-        if [[ -z "${_secondary_count[$combo_id]}" ]]; then
-          _secondary_count["$combo_id"]=1
-          continue
-        elif [[ "${_secondary_count[$combo_id]}" -eq 1 ]]; then
+        if [[ -z "${secondary_count_combo[$combo_id]}" ]]; then
+          secondary_count_combo["$combo_id"]=1
+        elif [[ "${secondary_count_combo[$combo_id]}" -eq 1 ]]; then
           targets_after_region+=("$target")
-          _secondary_count["$combo_id"]=2
+          secondary_count_combo["$combo_id"]=2
         fi
         ;;
       "all")
@@ -545,18 +554,17 @@ main() {
     esac
   done
 
-  num_filtered_targets=${#targets_after_region[@]}
+  local num_filtered_targets=${#targets_after_region[@]}
   if [[ "$num_filtered_targets" -eq 0 ]]; then
-    log_info "No targets match the current filter criteria (region filter). Exiting."
+    log_info "No targets match the current filter criteria (after region filtering). Exiting."
     exit 0
   fi
   log_info "Processing $num_filtered_targets targets sequentially (after region filtering)."
 
-  # --------- VERBOSE mode: print the service URLs to be used ---------
+  # --- Verbose output of URLs ---
   if $SHOW_VERBOSE_URLS; then
-    echo "Service URLs to be called:"
+    echo "Service URLs to be called (one per target):"
     for target_json in "${targets_after_region[@]}"; do
-      # Use the service URL template to compose the URL
       service_key=$(echo "$target_json" | jq -r '.service_key')
       environment=$(echo "$target_json" | jq -r '.environment')
       tenant=$(echo "$target_json" | jq -r '.tenant')
@@ -570,29 +578,10 @@ main() {
       url="${url//\{effective_tenant\}/$tenant}"
       url="${url//\{effective_env\}/$environment}"
       display_name="${SERVICES_REPO_MAP_DATA["$service_key,display_name"]}"
-      printf "[%s|%s|%s|%s] %s\n" "$display_name" "$tenant" "$environment" "$region_url_param" "$url"
+      printf "[%s | %s | %s | %s] %s\n" "$display_name" "$tenant" "$environment" "$region_url_param" "$url"
     done
-    echo "End of service URL list."
+    echo "---- End of service URL list ----"
   fi
-
-  done
-    local tenant_match=false env_match=false region_match=false service_match=false
-    if [[ "${SELECTED_TENANTS[0]}" == "all" || " ${SELECTED_TENANTS[*]} " =~ " $t_tenant " ]]; then tenant_match=true; fi
-    if [[ "${SELECTED_ENVIRONMENTS[0]}" == "all" || " ${SELECTED_ENVIRONMENTS[*]} " =~ " $t_env " ]]; then env_match=true; fi
-    if [[ "${SELECTED_REGIONS[0]}" == "all" || " ${SELECTED_REGIONS[*]} " =~ " $t_region " ]]; then region_match=true; fi
-    if [[ "${SELECTED_SERVICES[0]}" == "all" || " ${SELECTED_SERVICES[*]} " =~ " $t_service_key " ]]; then service_match=true; fi
-
-    if $tenant_match && $env_match && $region_match && $service_match; then
-      filtered_targets_json_array+=("$current_target_json")
-    fi
-  done
-
-  local num_filtered_targets=${#filtered_targets_json_array[@]}
-  if [[ "$num_filtered_targets" -eq 0 ]]; then
-    log_info "No targets match the current filter criteria. Exiting."
-    exit 0
-  fi
-  log_info "Processing $num_filtered_targets targets sequentially (out of $num_all_targets total targets)."
 
   declare -a results_array=()
   for i in $(seq 0 $((num_filtered_targets - 1))); do
@@ -611,12 +600,12 @@ main() {
   printf "\n"
   log_info "All targets processed. Generating report..."
 
-  # Output Table Generation (largely unchanged from previous version)
+  # Output Table Generation (same as before)
   local max_name_len=12 max_deployed_len=10 max_latest_len=10 max_service_len=15 max_tenant_len=7 max_env_len=5 max_region_len=8
 
   max_name_len=$(($(echo "Target Instance" | wc -m) > max_name_len ? $(echo "Target Instance" | wc -m) : max_name_len))
   max_deployed_len=$(($(echo "Deployed" | wc -m) > max_deployed_len ? $(echo "Deployed" | wc -m) : max_deployed_len))
-  max_latest_len=$(($(echo "GH Ref Ver" | wc -m) > max_latest_len ? $(echo "GH Ref Ver" | wc -m) : max_latest_len)) # Adjusted Header
+  max_latest_len=$(($(echo "GH Ref Ver" | wc -m) > max_latest_len ? $(echo "GH Ref Ver" | wc -m) : max_latest_len))
   max_service_len=$(($(echo "Service" | wc -m) > max_service_len ? $(echo "Service" | wc -m) : max_service_len))
   max_tenant_len=$(($(echo "Tenant" | wc -m) > max_tenant_len ? $(echo "Tenant" | wc -m) : max_tenant_len))
   max_env_len=$(($(echo "Env" | wc -m) > max_env_len ? $(echo "Env" | wc -m) : max_env_len))
@@ -627,7 +616,7 @@ main() {
     IFS='|' read -r name deployed latest _ service tenant env region _ <<<"$line"
     ((${#name} > max_name_len)) && max_name_len=${#name}
     ((${#deployed} > max_deployed_len)) && max_deployed_len=${#deployed}
-    ((${#latest} > max_latest_len)) && max_latest_len=${#latest} # 'latest' here is GH Ref Ver
+    ((${#latest} > max_latest_len)) && max_latest_len=${#latest}
     ((${#service} > max_service_len)) && max_service_len=${#service}
     ((${#tenant} > max_tenant_len)) && max_tenant_len=${#tenant}
     ((${#env} > max_env_len)) && max_env_len=${#env}
@@ -659,7 +648,7 @@ main() {
           if (status == "GH_ERROR") return 1; if (status == "SVC_ERROR") return 2;
           if (status == "AHEAD") return 3; if (status == "OUTDATED") return 4;
           if (status == "NO_GH_RELEASES") return 5; if (status == "UP-TO-DATE") return 6;
-          return 7; # UNKNOWN_CMP etc.
+          return 7;
       }
       { print status_sort_key($9) "|" $0 }' |
       sort -t'|' -k1,1n -k6,6 -k7,7 -k8,8 | cut -d'|' -f2-
