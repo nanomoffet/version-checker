@@ -17,8 +17,8 @@ GH_CACHE_SUBDIR="github_releases"
 
 mkdir -p "$TMP_DIR"
 if ! mkdir -p "$CACHE_DIR/$GH_CACHE_SUBDIR"; then
-    echo "ERROR: Could not create cache directory $CACHE_DIR/$GH_CACHE_SUBDIR" >&2
-    exit 1
+  echo "ERROR: Could not create cache directory $CACHE_DIR/$GH_CACHE_SUBDIR" >&2
+  exit 1
 fi
 
 # --- Global Variables & Associative Arrays ---
@@ -29,7 +29,7 @@ GITHUB_RELEASE_CACHE_TTL_SECONDS=""
 
 declare -A SERVICES_REPO_MAP_DATA
 declare -A GITHUB_LATEST_VERSION_CACHE # In-memory cache for GH releases for *this run*
-declare -A USER_SELECTED_GH_VERSIONS # Stores service_key -> user_chosen_tag_for_comparison
+declare -A USER_SELECTED_GH_VERSIONS   # Stores service_key -> user_chosen_tag_for_comparison
 
 # Filters
 declare -a SELECTED_TENANTS
@@ -54,15 +54,18 @@ NC=$'\033[0m'
 check_deps() {
   local missing_deps=0
   for cmd_tool in yq jq curl gh gum; do
-    if ! command -v "$cmd_tool" &> /dev/null; then
+    if ! command -v "$cmd_tool" &>/dev/null; then
       log_error "Required command '$cmd_tool' not found. Please install it."
       missing_deps=1
     fi
   done
 
-  if command -v gh &> /dev/null; then
+  if command -v gh &>/dev/null; then
     local prev_opts=""
-    if [[ $- == *e* ]]; then prev_opts="e"; set +e; fi
+    if [[ $- == *e* ]]; then
+      prev_opts="e"
+      set +e
+    fi
     gh auth status &>/dev/null
     local auth_status=$?
     if [[ -n "$prev_opts" ]]; then set -"$prev_opts"; fi
@@ -89,39 +92,39 @@ print_usage() {
 
 # --- Version Comparison ---
 compare_versions() {
-    # Args: version1 (deployed), version2 (github_reference)
-    # Returns EXIT STATUS:
-    #   0 if version1 == version2 (UP-TO-DATE)
-    #   1 if version1 > version2 (AHEAD)
-    #   2 if version1 < version2 (OUTDATED)
-    #   3 if error or non-standard/uncomparable versions (e.g., N/A, ERR_*)
-    local v1="${1#v}" # Deployed
-    local v2="${2#v}" # GitHub Reference
+  # Args: version1 (deployed), version2 (github_reference)
+  # Returns EXIT STATUS:
+  #   0 if version1 == version2 (UP-TO-DATE)
+  #   1 if version1 > version2 (AHEAD)
+  #   2 if version1 < version2 (OUTDATED)
+  #   3 if error or non-standard/uncomparable versions (e.g., N/A, ERR_*)
+  local v1="${1#v}" # Deployed
+  local v2="${2#v}" # GitHub Reference
 
-    # Handle N/A or error states directly using exit status 3
-    if [[ "$v1" == N/A* || "$v1" == ERR_* || "$v1" == TIMEOUT_* || "$v1" == HTTP_* ]]; then return 3; fi
-    if [[ "$v2" == N/A* || "$v2" == ERR_* || "$v2" == NO_RELEASES ]]; then return 3; fi
+  # Handle N/A or error states directly using exit status 3
+  if [[ "$v1" == N/A* || "$v1" == ERR_* || "$v1" == TIMEOUT_* || "$v1" == HTTP_* ]]; then return 3; fi
+  if [[ "$v2" == N/A* || "$v2" == ERR_* || "$v2" == NO_RELEASES ]]; then return 3; fi
 
-    # Check if they are identical first (common case)
-    if [[ "$v1" == "$v2" ]]; then return 0; fi
+  # Check if they are identical first (common case)
+  if [[ "$v1" == "$v2" ]]; then return 0; fi
 
-    # Use sort -V for robust version comparison
-    # Redirect stderr to /dev/null in case sort -V encounters invalid version strings
-    local sorted_first
-    sorted_first=$(printf '%s\n%s\n' "$v1" "$v2" | sort -V 2>/dev/null | head -n 1)
+  # Use sort -V for robust version comparison
+  # Redirect stderr to /dev/null in case sort -V encounters invalid version strings
+  local sorted_first
+  sorted_first=$(printf '%s\n%s\n' "$v1" "$v2" | sort -V 2>/dev/null | head -n 1)
 
-    # If sort -V had issues (e.g., non-version strings), $sorted_first might be unreliable.
-    # As a basic check, if $sorted_first is empty or not one of the inputs, treat as non-comparable.
-    if [[ -z "$sorted_first" || ("$sorted_first" != "$v1" && "$sorted_first" != "$v2") ]]; then
-        return 3 # Treat as non-comparable
-    fi
+  # If sort -V had issues (e.g., non-version strings), $sorted_first might be unreliable.
+  # As a basic check, if $sorted_first is empty or not one of the inputs, treat as non-comparable.
+  if [[ -z "$sorted_first" || ("$sorted_first" != "$v1" && "$sorted_first" != "$v2") ]]; then
+    return 3 # Treat as non-comparable
+  fi
 
-    if [[ "$sorted_first" == "$v1" ]]; then # v1 is smaller or equal
-        # If they weren't identical initially, v1 must be smaller
-        return 2 # v1 < v2 (OUTDATED)
-    else # $sorted_first must be $v2, meaning v1 is larger
-        return 1 # v1 > v2 (AHEAD)
-    fi
+  if [[ "$sorted_first" == "$v1" ]]; then # v1 is smaller or equal
+    # If they weren't identical initially, v1 must be smaller
+    return 2 # v1 < v2 (OUTDATED)
+  else       # $sorted_first must be $v2, meaning v1 is larger
+    return 1 # v1 > v2 (AHEAD)
+  fi
 }
 
 # --- YAML Parsing ---
@@ -138,8 +141,8 @@ parse_global_config() {
   SERVICE_URL_TEMPLATE=$(yq e '.global.service_url_template' "$CONFIG_FILE_TO_USE")
   GITHUB_RELEASE_CACHE_TTL_SECONDS=$(yq e '.global.github_release_cache_ttl_seconds // ""' "$CONFIG_FILE_TO_USE")
 
-  if [[ -z "$DEFAULT_CURL_TIMEOUT_SECONDS" || -z "$DEFAULT_VERSION_JQ_QUERY" || \
-        -z "$SERVICE_URL_TEMPLATE" || -z "$GITHUB_RELEASE_CACHE_TTL_SECONDS" ]]; then
+  if [[ -z "$DEFAULT_CURL_TIMEOUT_SECONDS" || -z "$DEFAULT_VERSION_JQ_QUERY" ||
+    -z "$SERVICE_URL_TEMPLATE" || -z "$GITHUB_RELEASE_CACHE_TTL_SECONDS" ]]; then
     log_error "Global config error: Ensure default_curl_timeout_seconds, default_version_jq_query, service_url_template, github_release_cache_ttl_seconds are set."
     exit 1
   fi
@@ -176,36 +179,36 @@ parse_services_repo_map() {
 
 # --- Data Fetching ---
 get_latest_github_release_tags() {
-    local repo_name="$1"
-    local limit="${2:-1}" # Default to 1 if no limit specified
-    local release_tags_str
-    local gh_stderr_file="$TMP_DIR/gh_stderr_releaselist_${repo_name//\//_}_$$.txt"
+  local repo_name="$1"
+  local limit="${2:-1}" # Default to 1 if no limit specified
+  local release_tags_str
+  local gh_stderr_file="$TMP_DIR/gh_stderr_releaselist_${repo_name//\//_}_$$.txt"
 
-    release_tags_str=$(gh release list --repo "$repo_name" --limit "$limit" --json tagName --jq '.[].tagName' 2> "$gh_stderr_file")
-    local gh_status=$?
-    local gh_stderr_output=""
-     if [[ -f "$gh_stderr_file" ]]; then
-        gh_stderr_output=$(cat "$gh_stderr_file")
-        rm -f "$gh_stderr_file"
-    fi
+  release_tags_str=$(gh release list --repo "$repo_name" --limit "$limit" --json tagName --jq '.[].tagName' 2>"$gh_stderr_file")
+  local gh_status=$?
+  local gh_stderr_output=""
+  if [[ -f "$gh_stderr_file" ]]; then
+    gh_stderr_output=$(cat "$gh_stderr_file")
+    rm -f "$gh_stderr_file"
+  fi
 
-    if [[ $gh_status -ne 0 ]]; then
-        if echo "$gh_stderr_output" | grep -q -i "Could not resolve to a Repository"; then
-            echo "ERR_GH_NOT_FOUND"
-        elif echo "$gh_stderr_output" | grep -q -i "No releases found"; then
-            echo "NO_RELEASES"
-        else
-            log_error "gh CLI error for $repo_name (limiting to $limit): $gh_stderr_output"
-            echo "ERR_GH_CLI($gh_status)"
-        fi
-        return 1
+  if [[ $gh_status -ne 0 ]]; then
+    if echo "$gh_stderr_output" | grep -q -i "Could not resolve to a Repository"; then
+      echo "ERR_GH_NOT_FOUND"
+    elif echo "$gh_stderr_output" | grep -q -i "No releases found"; then
+      echo "NO_RELEASES"
+    else
+      log_error "gh CLI error for $repo_name (limiting to $limit): $gh_stderr_output"
+      echo "ERR_GH_CLI($gh_status)"
     fi
-    if [[ -z "$release_tags_str" ]]; then
-        echo "NO_RELEASES"
-        return 1
-    fi
-    echo "$release_tags_str" # Returns multiple tags separated by newlines
-    return 0
+    return 1
+  fi
+  if [[ -z "$release_tags_str" ]]; then
+    echo "NO_RELEASES"
+    return 1
+  fi
+  echo "$release_tags_str" # Returns multiple tags separated by newlines
+  return 0
 }
 
 get_cached_or_fetch_latest_gh_release() {
@@ -217,19 +220,19 @@ get_cached_or_fetch_latest_gh_release() {
   local release_tag="N/A_GH_FETCH"
 
   if [[ -v GITHUB_LATEST_VERSION_CACHE["$repo_name"] ]]; then # Check in-memory first
-      echo "${GITHUB_LATEST_VERSION_CACHE["$repo_name"]}"
-      return 0
+    echo "${GITHUB_LATEST_VERSION_CACHE["$repo_name"]}"
+    return 0
   fi
 
   if [[ -f "$cache_file_tag" && -f "$cache_ts_file" ]]; then
     local cache_ts
     cache_ts=$(cat "$cache_ts_file")
-    if (( (current_time - cache_ts) < GITHUB_RELEASE_CACHE_TTL_SECONDS )); then
+    if (((current_time - cache_ts) < GITHUB_RELEASE_CACHE_TTL_SECONDS)); then
       release_tag=$(cat "$cache_file_tag")
       if [[ -n "$release_tag" && "$release_tag" != ERR_* ]]; then
-          GITHUB_LATEST_VERSION_CACHE["$repo_name"]="$release_tag"
-          echo "$release_tag"
-          return 0
+        GITHUB_LATEST_VERSION_CACHE["$repo_name"]="$release_tag"
+        echo "$release_tag"
+        return 0
       fi
     fi
   fi
@@ -239,13 +242,13 @@ get_cached_or_fetch_latest_gh_release() {
 
   # Handle error results from get_latest_github_release_tags
   if [[ "$release_tag" == ERR_* || "$release_tag" == "NO_RELEASES" ]]; then
-      : # Do nothing, release_tag already holds the error/status
+    :                                # Do nothing, release_tag already holds the error/status
   elif [[ -z "$release_tag" ]]; then # Should be caught by NO_RELEASES from func
-      release_tag="NO_RELEASES"
+    release_tag="NO_RELEASES"
   else
     # Cache valid fetched tag
-    echo "$release_tag" > "$cache_file_tag"
-    echo "$current_time" > "$cache_ts_file"
+    echo "$release_tag" >"$cache_file_tag"
+    echo "$current_time" >"$cache_ts_file"
   fi
 
   GITHUB_LATEST_VERSION_CACHE["$repo_name"]="$release_tag"
@@ -269,7 +272,8 @@ get_deployed_version() { # Unchanged, no caching for deployed versions
   else
     deployed_version=$(echo "$response" | jq -r "$jq_query" 2>/dev/null)
     if [[ -z "$deployed_version" || "$deployed_version" == "null" ]]; then
-      local http_code_from_json; http_code_from_json=$(echo "$response" | jq -r '.statusCode // .status // ""' 2>/dev/null)
+      local http_code_from_json
+      http_code_from_json=$(echo "$response" | jq -r '.statusCode // .status // ""' 2>/dev/null)
       if [[ -n "$http_code_from_json" && "$http_code_from_json" != "null" ]]; then deployed_version="HTTP_$http_code_from_json"; else
         if echo "$response" | grep -q -iE '<html>|<head>|Error'; then deployed_version="ERR_SVC_HTML_RESP"; else deployed_version="ERR_SVC_PARSE"; fi
       fi
@@ -307,7 +311,7 @@ run_interactive_config() {
   echo "Select regions to query:"
   mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit "${all_regions[@]}")
   [[ ${#SELECTED_REGIONS_GUM[@]} -gt 0 ]] && SELECTED_REGIONS=("${SELECTED_REGIONS_GUM[@]}")
-  
+
   echo "Select services to query:"
   # Using display names for gum, then map back to service_keys
   mapfile -t selected_display_names < <(gum choose --no-limit "${all_service_display_names[@]}")
@@ -316,7 +320,7 @@ run_interactive_config() {
     for display_name_with_key in "${selected_display_names[@]}"; do
       # Extract service_key from "Display Name (service_key)"
       local skey_from_display=${display_name_with_key##*\(} # Get content after last (
-      skey_from_display=${skey_from_display%\)*} # Remove closing )
+      skey_from_display=${skey_from_display%\)*}            # Remove closing )
       SELECTED_SERVICES+=("$skey_from_display")
     done
   fi
@@ -326,25 +330,25 @@ run_interactive_config() {
     for service_key_to_configure in "${SELECTED_SERVICES[@]}"; do
       local repo_for_service="${SERVICES_REPO_MAP_DATA["$service_key_to_configure,repo"]}"
       local display_name_for_service="${SERVICES_REPO_MAP_DATA["$service_key_to_configure,display_name"]}"
-      
+
       echo "Fetching 5 latest releases for $display_name_for_service ($repo_for_service)..."
       mapfile -t latest_5_tags < <(get_latest_github_release_tags "$repo_for_service" 5)
-      
+
       if [[ "${latest_5_tags[0]}" == ERR_* || "${latest_5_tags[0]}" == "NO_RELEASES" ]]; then
         log_error "Could not fetch releases for $display_name_for_service. Will use 'latest' logic for comparison."
         USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Fallback
         continue
       fi
       if [[ ${#latest_5_tags[@]} -eq 0 ]]; then
-          log_error "No releases found for $display_name_for_service. Will use 'latest' logic."
-          USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Fallback
-          continue
+        log_error "No releases found for $display_name_for_service. Will use 'latest' logic."
+        USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Fallback
+        continue
       fi
 
       local gum_options=("Use latest GitHub release (auto)" "${latest_5_tags[@]}")
       echo "Choose GitHub version for comparison for $display_name_for_service:"
       chosen_version=$(gum choose "${gum_options[@]}")
-      
+
       if [[ "$chosen_version" == "Use latest GitHub release (auto)" || -z "$chosen_version" ]]; then
         USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Special marker
       else
@@ -352,7 +356,7 @@ run_interactive_config() {
       fi
     done
   else
-      log_info "All services selected, or no specific services. Version comparison will use latest GitHub release for all."
+    log_info "All services selected, or no specific services. Version comparison will use latest GitHub release for all."
   fi
   log_info "Interactive configuration complete."
 }
@@ -402,10 +406,22 @@ process_target() {
     compare_versions "$deployed_version" "$github_reference_version"
     local comparison_result=$?
     case $comparison_result in
-      0) status_text="${GREEN}UP-TO-DATE${NC}"; raw_status_text="UP-TO-DATE";;
-      1) status_text="${BLUE}AHEAD${NC}"; raw_status_text="AHEAD";; # Deployed is newer
-      2) status_text="${YELLOW}OUTDATED${NC}"; raw_status_text="OUTDATED";; # Deployed is older
-      *) status_text="${YELLOW}NEEDS_CMP_FIX ($deployed_version vs $github_reference_version)${NC}"; raw_status_text="UNKNOWN_CMP";; # Fallback
+    0)
+      status_text="${GREEN}UP-TO-DATE${NC}"
+      raw_status_text="UP-TO-DATE"
+      ;;
+    1)
+      status_text="${BLUE}AHEAD${NC}"
+      raw_status_text="AHEAD"
+      ;; # Deployed is newer
+    2)
+      status_text="${YELLOW}OUTDATED${NC}"
+      raw_status_text="OUTDATED"
+      ;; # Deployed is older
+    *)
+      status_text="${YELLOW}NEEDS_CMP_FIX ($deployed_version vs $github_reference_version)${NC}"
+      raw_status_text="UNKNOWN_CMP"
+      ;; # Fallback
     esac
   fi
   echo "$target_name|$deployed_version|$github_reference_version|$status_text|$service_display_name|$tenant|$environment|$region_url_param|$raw_status_text"
@@ -417,17 +433,28 @@ main() {
   INTERACTIVE_CONFIG_MODE=false
   while getopts ":f:ch" opt; do
     case $opt in
-      f) CONFIG_FILE_CMD_OPT="$OPTARG";;
-      c) INTERACTIVE_CONFIG_MODE=true;;
-      h) print_usage; exit 0;;
-      \?) log_error "Invalid option: -$OPTARG"; print_usage; exit 1;;
-      :) log_error "Option -$OPTARG requires an argument."; print_usage; exit 1;;
+    f) CONFIG_FILE_CMD_OPT="$OPTARG" ;;
+    c) INTERACTIVE_CONFIG_MODE=true ;;
+    h)
+      print_usage
+      exit 0
+      ;;
+    \?)
+      log_error "Invalid option: -$OPTARG"
+      print_usage
+      exit 1
+      ;;
+    :)
+      log_error "Option -$OPTARG requires an argument."
+      print_usage
+      exit 1
+      ;;
     esac
   done
-  shift $((OPTIND -1)) # Remove parsed options
+  shift $((OPTIND - 1)) # Remove parsed options
 
   check_deps
-  parse_global_config # Uses CONFIG_FILE_CMD_OPT or default
+  parse_global_config     # Uses CONFIG_FILE_CMD_OPT or default
   parse_services_repo_map # Same
 
   if $INTERACTIVE_CONFIG_MODE; then
@@ -442,7 +469,8 @@ main() {
   local all_targets_json
   all_targets_json=$(yq e -o=json '.targets' "$CONFIG_FILE_TO_USE")
   if [[ -z "$all_targets_json" || "$all_targets_json" == "null" ]]; then
-      log_error "No targets found in $CONFIG_FILE_TO_USE or error parsing targets."; exit 1
+    log_error "No targets found in $CONFIG_FILE_TO_USE or error parsing targets."
+    exit 1
   fi
 
   declare -a filtered_targets_json_array=()
@@ -480,42 +508,50 @@ main() {
   declare -a results_array=()
   for i in $(seq 0 $((num_filtered_targets - 1))); do
     local target_item_json="${filtered_targets_json_array[$i]}"
-    local target_name_for_progress; target_name_for_progress=$(echo "$target_item_json" | jq -r '.name // "Unknown Target"')
-    printf "\rProcessing target %s/%s: %s..." "$((i+1))" "$num_filtered_targets" "$target_name_for_progress"
-    
-    local result_line; result_line=$(process_target "$target_item_json")
+    local target_name_for_progress
+    target_name_for_progress=$(echo "$target_item_json" | jq -r '.name // "Unknown Target"')
+    printf "\rProcessing target %s/%s: %s..." "$((i + 1))" "$num_filtered_targets" "$target_name_for_progress"
+
+    local result_line
+    result_line=$(process_target "$target_item_json")
     if [[ -n "$result_line" ]]; then results_array+=("$result_line"); else
       log_error "Processing failed for '$target_name_for_progress' (index $i), no result returned."
     fi
   done
-  
-  printf "\n"; log_info "All targets processed. Generating report..."
+
+  printf "\n"
+  log_info "All targets processed. Generating report..."
 
   # Output Table Generation (largely unchanged from previous version)
   local max_name_len=12 max_deployed_len=10 max_latest_len=10 max_service_len=15 max_tenant_len=7 max_env_len=5 max_region_len=8
-  
-  max_name_len=$(( $(echo "Target Instance" | wc -m) > max_name_len ? $(echo "Target Instance" | wc -m) : max_name_len ))
-  max_deployed_len=$(( $(echo "Deployed" | wc -m) > max_deployed_len ? $(echo "Deployed" | wc -m) : max_deployed_len ))
-  max_latest_len=$(( $(echo "GH Ref Ver" | wc -m) > max_latest_len ? $(echo "GH Ref Ver" | wc -m) : max_latest_len )) # Adjusted Header
-  max_service_len=$(( $(echo "Service" | wc -m) > max_service_len ? $(echo "Service" | wc -m) : max_service_len ))
-  max_tenant_len=$(( $(echo "Tenant" | wc -m) > max_tenant_len ? $(echo "Tenant" | wc -m) : max_tenant_len ))
-  max_env_len=$(( $(echo "Env" | wc -m) > max_env_len ? $(echo "Env" | wc -m) : max_env_len ))
-  max_region_len=$(( $(echo "Region" | wc -m) > max_region_len ? $(echo "Region" | wc -m) : max_region_len ))
+
+  max_name_len=$(($(echo "Target Instance" | wc -m) > max_name_len ? $(echo "Target Instance" | wc -m) : max_name_len))
+  max_deployed_len=$(($(echo "Deployed" | wc -m) > max_deployed_len ? $(echo "Deployed" | wc -m) : max_deployed_len))
+  max_latest_len=$(($(echo "GH Ref Ver" | wc -m) > max_latest_len ? $(echo "GH Ref Ver" | wc -m) : max_latest_len)) # Adjusted Header
+  max_service_len=$(($(echo "Service" | wc -m) > max_service_len ? $(echo "Service" | wc -m) : max_service_len))
+  max_tenant_len=$(($(echo "Tenant" | wc -m) > max_tenant_len ? $(echo "Tenant" | wc -m) : max_tenant_len))
+  max_env_len=$(($(echo "Env" | wc -m) > max_env_len ? $(echo "Env" | wc -m) : max_env_len))
+  max_region_len=$(($(echo "Region" | wc -m) > max_region_len ? $(echo "Region" | wc -m) : max_region_len))
 
   for line in "${results_array[@]}"; do
     local name deployed latest _ service tenant env region _
-    IFS='|' read -r name deployed latest _ service tenant env region _ <<< "$line"
-    (( ${#name} > max_name_len )) && max_name_len=${#name}
-    (( ${#deployed} > max_deployed_len )) && max_deployed_len=${#deployed}
-    (( ${#latest} > max_latest_len )) && max_latest_len=${#latest} # 'latest' here is GH Ref Ver
-    (( ${#service} > max_service_len )) && max_service_len=${#service}
-    (( ${#tenant} > max_tenant_len )) && max_tenant_len=${#tenant}
-    (( ${#env} > max_env_len )) && max_env_len=${#env}
-    (( ${#region} > max_region_len )) && max_region_len=${#region}
+    IFS='|' read -r name deployed latest _ service tenant env region _ <<<"$line"
+    ((${#name} > max_name_len)) && max_name_len=${#name}
+    ((${#deployed} > max_deployed_len)) && max_deployed_len=${#deployed}
+    ((${#latest} > max_latest_len)) && max_latest_len=${#latest} # 'latest' here is GH Ref Ver
+    ((${#service} > max_service_len)) && max_service_len=${#service}
+    ((${#tenant} > max_tenant_len)) && max_tenant_len=${#tenant}
+    ((${#env} > max_env_len)) && max_env_len=${#env}
+    ((${#region} > max_region_len)) && max_region_len=${#region}
   done
-  
-  max_name_len=$((max_name_len + 1)); max_deployed_len=$((max_deployed_len + 1)); max_latest_len=$((max_latest_len + 1))
-  max_service_len=$((max_service_len + 1)); max_tenant_len=$((max_tenant_len + 1)); max_env_len=$((max_env_len + 1)); max_region_len=$((max_region_len + 1))
+
+  max_name_len=$((max_name_len + 1))
+  max_deployed_len=$((max_deployed_len + 1))
+  max_latest_len=$((max_latest_len + 1))
+  max_service_len=$((max_service_len + 1))
+  max_tenant_len=$((max_tenant_len + 1))
+  max_env_len=$((max_env_len + 1))
+  max_region_len=$((max_region_len + 1))
 
   local format_string="%-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %s\n"
   printf "\n--- Service Version Status (Generated: $(date)) ---\n"
@@ -523,12 +559,12 @@ main() {
     "$max_service_len" "Service" "$max_tenant_len" "Tenant" "$max_env_len" "Env" "$max_region_len" "Region" \
     "$max_name_len" "Target Instance" "$max_deployed_len" "Deployed" "$max_latest_len" "GH Ref Ver" "Status"
 
-  local total_width=$((max_service_len + max_tenant_len + max_env_len + max_region_len + max_name_len + max_deployed_len + max_latest_len + 7*3 + 15))
+  local total_width=$((max_service_len + max_tenant_len + max_env_len + max_region_len + max_name_len + max_deployed_len + max_latest_len + 7 * 3 + 15))
   printf "%${total_width}s\n" "" | tr " " "-"
 
   declare -a sorted_results=()
   while IFS= read -r line; do sorted_results+=("$line"); done < <(
-      printf "%s\n" "${results_array[@]}" | \
+    printf "%s\n" "${results_array[@]}" |
       awk -F'|' '
       function status_sort_key(status) {
           if (status == "GH_ERROR") return 1; if (status == "SVC_ERROR") return 2;
@@ -536,13 +572,13 @@ main() {
           if (status == "NO_GH_RELEASES") return 5; if (status == "UP-TO-DATE") return 6;
           return 7; # UNKNOWN_CMP etc.
       }
-      { print status_sort_key($9) "|" $0 }' | \
+      { print status_sort_key($9) "|" $0 }' |
       sort -t'|' -k1,1n -k6,6 -k7,7 -k8,8 | cut -d'|' -f2-
   )
 
   for line in "${sorted_results[@]}"; do
     local target_name_val deployed_val gh_ref_ver_val status_val service_val tenant_val env_val region_val _
-    IFS='|' read -r target_name_val deployed_val gh_ref_ver_val status_val service_val tenant_val env_val region_val _ <<< "$line"
+    IFS='|' read -r target_name_val deployed_val gh_ref_ver_val status_val service_val tenant_val env_val region_val _ <<<"$line"
     printf "$format_string" \
       "$max_service_len" "$service_val" "$max_tenant_len" "$tenant_val" "$max_env_len" "$env_val" "$max_region_len" "$region_val" \
       "$max_name_len" "$target_name_val" "$max_deployed_len" "$deployed_val" "$max_latest_len" "$gh_ref_ver_val" "$status_val"
