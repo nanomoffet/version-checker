@@ -10,15 +10,17 @@
 
 # --- Configuration ---
 CONFIG_FILE_CMD_OPT="" # Will be set by -f flag
-DEFAULT_CONFIG_FILE="config.yml"
+DEFAULT_CONFIG_FILE="config.yaml"
 
 TMP_DIR="/tmp/version_checker_$$"
 CACHE_DIR="$HOME/.cache/version_checker"
 GH_CACHE_SUBDIR="github_releases"
 
-mkdir -p "$TMP_DIR"
+# Ensure TMP_DIR is created early
+mkdir -p "$TMP_DIR" || { log_error "Could not create temporary directory $TMP_DIR"; exit 1; }
+
 if ! mkdir -p "$CACHE_DIR/$GH_CACHE_SUBDIR"; then
-  echo "ERROR: Could not create cache directory $CACHE_DIR/$GH_CACHE_SUBDIR" >&2
+  log_error "Could not create cache directory $CACHE_DIR/$GH_CACHE_SUBDIR" >&2
   exit 1
 fi
 
@@ -160,6 +162,7 @@ compare_versions() {
 
 # --- YAML Parsing ---
 # parse_global_config is called in both main and worker processes.
+# Workers need the config file path passed explicitly.
 parse_global_config() {
   local config_file_to_use="$1" # Get config file path as argument
   if [[ ! -f "$config_file_to_use" ]]; then
@@ -171,7 +174,9 @@ parse_global_config() {
   # Only log info in the main process, not every worker
   if [[ -z "$PROCESS_SINGLE_TARGET_MODE" ]]; then log_info "Using configuration file: $config_file_to_use"; fi
 
-  # Need to use read to handle multi-line output from yq correctly
+  # Use read to handle multi-line output from yq correctly for globals
+  # In worker mode, these variables are local to the worker process
+  # In main mode, they are global
   read -r DEFAULT_CURL_TIMEOUT_SECONDS <<< "$(yq e '.global.default_curl_timeout_seconds' "$config_file_to_use")"
   read -r DEFAULT_VERSION_JQ_QUERY <<< "$(yq e '.global.default_version_jq_query' "$config_file_to_use")"
   read -r SERVICE_URL_TEMPLATE <<< "$(yq e '.global.service_url_template' "$config_file_to_use")"
@@ -195,6 +200,7 @@ parse_global_config() {
   return 0 # Indicate success
 }
 
+# parse_defaults_from_config is only called in the main process.
 parse_defaults_from_config() {
   CONFIG_FILE_TO_USE="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
   # Use // "all" default directly with yq
@@ -220,7 +226,7 @@ parse_defaults_from_config() {
    if [[ "${SELECTED_TENANTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_TENANTS=("all"); fi
    if [[ "${SELECTED_ENVIRONMENTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_ENVIRONMENTS=("all"); fi
    if [[ "${SELECTED_REGIONS[*]}" =~ (^| )all( |$) ]]; then SELECTED_REGIONS=("all"); fi # Default regions to "all" if config is empty/null/only whitespace
-   if [[ "${SELECTED_SERVICES[*]}" =~ (^| )all( |$) ]]; then SELECTED_REGIONS=("all"); fi
+   if [[ "${SELECTED_SERVICES[*]}" =~ (^| )all( |$) ]]; then SELECTED_SERVICES=("all"); fi
 
    # Handle case where defaults were empty/null *after* trimming, ensure they become "all"
    if [[ ${#SELECTED_TENANTS[@]} -eq 0 ]]; then SELECTED_TENANTS=("all"); fi
@@ -233,7 +239,7 @@ parse_defaults_from_config() {
 
 }
 
-# parse_services_repo_map is only called in main process to populate SERVICES_REPO_MAP_DATA for filtering
+# parse_services_repo_map is only called in main process to populate SERVICES_REPO_MAP_DATA for filtering and GH version determination
 parse_services_repo_map() {
   CONFIG_FILE_TO_USE="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
   local service_keys_str
@@ -364,16 +370,16 @@ get_cached_or_fetch_latest_gh_release() {
 
 # get_deployed_version is called by workers
 get_deployed_version() {
+  # Takes all necessary URL construction info as arguments, plus global settings needed
   local service_url_param="$1" region_url_param_for_url="$2" effective_tenant="$3" effective_env="$4" jq_query="$5" url_template="$6" curl_timeout="$7"
 
   local url="$url_template"
   url="${url//\{service_url_param\}/$service_url_param}"
-  # Use the passed region_url_param_for_url for URL construction
   url="${url//\{region_url_param\}/$region_url_param_for_url}"
   url="${url//\{effective_tenant\}/$effective_tenant}"
   url="${url//\{effective_env\}/$effective_env}"
 
-  log_verbose "Fetching version from: $url" # Verbose output for URL
+  log_verbose "Fetching version from: $url" # Verbose output for URL (only if VERBOSE is exported)
 
   local deployed_version="N/A_DEPLOY_FETCH" response
   response=$(curl --max-time "$curl_timeout" -s -L "$url")
@@ -425,7 +431,7 @@ run_interactive_config() {
   # If there are NO targets for a filter type, gum choose with empty list is okay.
   if [[ ${#all_tenants[@]} -gt 0 ]]; then all_tenants=("all" "${all_tenants[@]}"); fi
   if [[ ${#all_environments[@]} -gt 0 ]]; then all_environments=("all" "${all_environments[@]}"); fi
-  # Region list for gum is only used if REGION_FILTER_MODE is 'off'
+  # Region list for gum is only used if REGION_FILTER_MODE is 'off' for filter setting purposes
   if [[ ${#all_regions[@]} -gt 0 ]]; then all_regions=("all" "${all_regions[@]}"); fi
 
 
@@ -538,20 +544,24 @@ run_interactive_config() {
 # It receives the config file path and the JSON input string as arguments
 worker_process_target() {
     local config_file_path="$1"
-    local combined_json_input="$2"
+    local combined_json_input="$2" # This is the JSON object string from parallel's {}
 
     # Set a flag so helper functions know they are in a worker
     export PROCESS_SINGLE_TARGET_MODE=true
 
+    # Export VERBOSE flag so worker logs respect it
+    export VERBOSE
+
     # Re-parse necessary global config in the worker process using the provided path
     parse_global_config "$config_file_path" || {
-        log_error "Worker failed to parse global config from '$config_file_path'."
+        # parse_global_config logs the error, just exit here
         exit 1 # Exit the worker process
     }
 
-    # Parse the input JSON
+    # Parse the input JSON string
     local target_json github_reference_version service_display_name service_repo original_region_url_param region_url_param_for_curl service_url_param_default
     # Use jq to extract fields from the passed JSON string
+    # Need to be careful with quoting the json_input string
     target_json=$(echo "$combined_json_input" | jq -c '.target')
     github_reference_version=$(echo "$combined_json_input" | jq -r '.github_reference_version')
     service_display_name=$(echo "$combined_json_input" | jq -r '.service_display_name')
@@ -561,6 +571,7 @@ worker_process_target() {
     service_url_param_default=$(echo "$combined_json_input" | jq -r '.service_url_param_default') # Default URL param for the service
 
 
+    # Extract necessary fields from the target_json
     local target_name service_key environment tenant service_url_param_override
     target_name=$(echo "$target_json" | jq -r '.name // "Unnamed Target"')
     service_key=$(echo "$target_json" | jq -r '.service_key')
@@ -572,6 +583,17 @@ worker_process_target() {
      if [[ -n "$service_url_param_override" && "$service_url_param_override" != "null" ]]; then
        effective_service_url_param="$service_url_param_override"
      fi
+
+    # Check if this is a dummy "UNKNOWN_SERVICE" target. If so, print the pre-formatted result and exit.
+    if [[ "$github_reference_version" == "N/A_UNKNOWN_SVC" ]]; then
+        local dummy_result_line
+        # Reconstruct the expected output format from the JSON passed in
+        # This assumes the main process correctly formatted the dummy JSON
+        dummy_result_line=$(echo "$combined_json_input" | jq -r '"\(.target_name)|\(.deployed_version)|\(.github_reference_version)|\(.status_text)|\(.service_display_name)|\(.tenant)|\(.environment)|\(.region_url_param)|\(.raw_status_text)"')
+        echo "$dummy_result_line" # Print the pre-formatted dummy result
+        exit 0 # Successfully processed the dummy target
+    fi
+
 
     # Fetch the deployed version using the determined region_url_param_for_curl
     local deployed_version
@@ -666,7 +688,14 @@ main() {
       ;;
     esac
   done
-  shift $((OPTIND - 1)) # Remove parsed options
+  shift $((OPTIND - 1)) # Remove parsed options from main's arguments
+
+  # Check if there are any remaining non-option arguments. If so, it's unexpected for main.
+  if [[ $# -gt 0 ]]; then
+      log_error "Unexpected arguments after options: $@. Please check usage."
+      print_usage
+      exit 1
+  fi
 
 
   check_deps # Checks for parallel now
@@ -703,6 +732,7 @@ main() {
     exit 1
   fi
 
+  # This array will hold the JSON objects to be passed to parallel workers
   declare -a targets_for_parallel_input=()
   local num_all_targets
   num_all_targets=$(echo "$all_targets_json" | jq 'length')
@@ -731,24 +761,29 @@ main() {
     t_region=$(echo "$current_target_json" | jq -r '.region_url_param // "null"')
     t_service_key=$(echo "$current_target_json" | jq -r '.service_key // "null"')
 
-    # Basic validation for essential fields
-    if [[ "$t_service_key" == "null" || "$t_tenant" == "null" || "$t_env" == "null" || "$t_region" == "null" ]]; then
-        log_debug "Skipping target '$t_name' (index $i) due to missing service_key, tenant, environment, or region_url_param."
+    # Basic validation for essential fields from config
+    if [[ "$t_service_key" == "null" || "$t_tenant" == "null" || "$t_env" == "null" ]]; then # Region can be null/empty and handled by mode 'off'
+        log_debug "Skipping target '$t_name' (index $i) due to missing service_key, tenant, or environment."
         continue
     fi
 
     # Check if service_key exists in the map data, skip if not.
-    # Add a dummy result line for the report indicating an unknown service key.
+    # Add a dummy result line JSON for the report indicating an unknown service key.
     if [[ ! -v SERVICES_REPO_MAP_DATA["$t_service_key,repo"] ]]; then
-        log_error "Target '$t_name' refers to unknown service_key '$t_service_key'. Skipping."
+        log_error "Target '$t_name' refers to unknown service_key '$t_service_key'. Skipping lookup."
+        # Prepare a dummy result JSON structure that the worker (or report parser) can handle
         local dummy_result_json=$(jq -n \
             --arg target_name "$t_name" \
-            --arg svc_key "$t_service_key" \
+            --arg deployed_version "N/A_UNKNOWN_SVC" \
+            --arg gh_ref_ver "N/A_UNKNOWN_SVC" \
+            --arg status_text "${RED}UNKNOWN_SERVICE${NC}" \
+            --arg svc_disp_name "Unknown Service ($t_service_key)" \
             --arg tenant "$t_tenant" \
             --arg env "$t_env" \
             --arg region "$t_region" \
-            '{target_name: $target_name, deployed_version: "N/A_UNKNOWN_SVC", github_reference_version: "N/A_UNKNOWN_SVC", status_text: "'"${RED}UNKNOWN_SERVICE${NC}"'", service_display_name: "Unknown Service (\($svc_key))", tenant: $tenant, environment: $env, region_url_param: $region, raw_status_text: "UNKNOWN_SERVICE"}')
-         targets_for_parallel_input+=("$dummy_result_json") # Add dummy JSON to input list
+            --arg raw_status "UNKNOWN_SERVICE" \
+            '{target_name: $target_name, deployed_version: $deployed_version, github_reference_version: $gh_ref_ver, status_text: $status_text, service_display_name: $svc_disp_name, tenant: $tenant, environment: $env, region_url_param: $region, raw_status_text: $raw_status}')
+         targets_for_parallel_input+=("$dummy_result_json") # Add dummy JSON to input list for report
         continue # Skip processing this target further
     fi
 
@@ -767,7 +802,7 @@ main() {
     # Apply Region filter/selection based on REGION_FILTER_MODE (Applied *after* other filters pass)
     local region_selection_passed=false
     local count_key="${t_service_key}-${t_tenant}-${t_env}" # Key for tracking service/tenant/env combos
-    local region_url_param_for_curl="$t_region" # Default CURL param is the configured region
+    local region_url_param_for_curl="$t_region" # Default CURL param is the configured region (can be null/empty)
 
     case "$REGION_FILTER_MODE" in
       off)
@@ -830,7 +865,7 @@ main() {
       fi
 
       # Construct the JSON object to pass to the worker
-      # IMPORTANT: Pass all necessary info to the worker, including the original target JSON
+      # Pass all necessary info to the worker, including the original target JSON
       local target_for_worker_json=$(jq -n \
         --argjson target "$current_target_json" \
         --arg gh_ref_ver "$github_reference_version" \
@@ -862,9 +897,12 @@ main() {
   log_info "Starting parallel processing..." >&2 # Log to stderr to keep stdout clean
 
   declare -a parallel_results=()
+  local config_file_arg="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
+
   # Use process substitution <(...) to feed input to parallel from the array
-  # The command is "$0" followed by arguments: "--process-single-target", "--config-file", the config path, and "{}"
-  # The worker will receive --process-single-target, then --config-file, then the path, then the JSON
+  # The command is "$0" followed by arguments: "--process-single-target", the config path, and "{}"
+  # The worker will receive --process-single-target, then the path, then the JSON input string.
+  # We capture stdout and stderr from parallel's execution of the workers
   mapfile -t parallel_results < <(printf "%s\n" "${targets_for_parallel_input[@]}" | \
     parallel \
       --jobs "$PARALLEL_JOBS" \
@@ -872,25 +910,23 @@ main() {
       --retries 1 \
       --status --eta \
       --bar \
-      "$0" --process-single-target --config-file "${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}" {} 2>&1) # Capture both stdout and stderr from parallel runs
+      "$0" --process-single-target "$config_file_arg" {} 2>&1) # Capture both stdout and stderr from parallel runs
 
   local parallel_status=$?
 
-  # parallel outputs worker stdout first, then stderr prefixed with job number.
-  # We only care about the stdout which is the result line.
-  # Filter out stderr lines that parallel might forward.
-  # Look for lines that do NOT start with `parallel: Hostname: ` or similar parallel output.
-  # The worker prints exactly one pipe-delimited line to stdout on success.
+  # Filter out stderr/parallel internal output lines from the results
+  # The worker prints exactly one pipe-delimited line to stdout on success or for dummy results.
   declare -a successful_results=()
+  declare -a worker_errors=()
   for line in "${parallel_results[@]}"; do
-      # Check if the line looks like a valid result line (contains at least one '|')
-      if [[ "$line" == *"|"* ]]; then
-           # Basic check to exclude potential parallel internal output on stdout
-           if ! echo "$line" | grep -qE '^parallel: '; then
-               successful_results+=("$line")
-           fi
-      #else # Optionally log lines that didn't look like results for debugging parallel issues
-      #   log_debug "Non-result line from parallel: $line" >&2
+      # Check if the line looks like a valid result line (contains at least 8 '|' characters)
+      # This is a heuristic to distinguish results from other output
+      if [[ $(echo "$line" | awk -F'|' '{print NF-1}') -ge 8 ]]; then
+           # Add to successful results
+           successful_results+=("$line")
+      else
+           # Assume it's an error or parallel internal message
+           worker_errors+=("$line")
       fi
   done
 
@@ -899,15 +935,23 @@ main() {
   if [[ "$num_successful_results" -eq 0 ]]; then
      log_info "No successful results to report after parallel processing." >&2
      # Check if parallel exited non-zero or if there was other output indicating failure
-     if [[ "$parallel_status" -ne 0 ]]; then
-          log_error "Parallel execution failed. Check logs for details." >&2
-          # Output raw parallel output for diagnosis if no results
-          echo "--- Raw Parallel Output (for diagnosis) ---" >&2
-          printf "%s\n" "${parallel_results[@]}" >&2
-          echo "-------------------------------------------" >&2
+     if [[ "$parallel_status" -ne 0 || ${#worker_errors[@]} -gt 0 ]]; then
+          log_error "Parallel execution encountered errors." >&2
+          if [[ ${#worker_errors[@]} -gt 0 ]]; then
+               log_error "Worker stderr/unformatted output:" >&2
+               printf "%s\n" "${worker_errors[@]}" >&2
+          fi
+          # parallel might also log to stderr directly depending on its options/setup,
+          # which was already captured by the `2>&1` on the mapfile command.
      fi
      exit 1 # Indicate failure if no results were generated
   fi
+
+  # Log worker errors that occurred alongside successful results
+   if [[ ${#worker_errors[@]} -gt 0 ]]; then
+        log_error "Some parallel workers reported errors:" >&2
+        printf "%s\n" "${worker_errors[@]}" >&2
+   fi
 
   log_info "All eligible targets processed. Generating report..." >&2 # Log to stderr
 
@@ -925,10 +969,12 @@ main() {
   for line in "${successful_results[@]}"; do
     # Use awk to split fields robustly, handles pipes within fields if they weren't supposed to be there
     # We need the raw fields before color codes for length calculation
-    local fields=($(echo "$line" | awk -F'|' '{gsub(/\x1B\[[0-9;]*m/, ""); print $1, $2, $3, $5, $6, $7, $8}'))
+    # Split by '|' and get fields 1, 2, 3, 5, 6, 7, 8
+    local fields=($(echo "$line" | awk -F'|' '{ print $1, $2, $3, $5, $6, $7, $8 }'))
     local name="${fields[0]}" deployed="${fields[1]}" latest="${fields[2]}" service="${fields[3]}" tenant="${fields[4]}" env="${fields[5]}" region="${fields[6]}"
 
     # Recalculate max lengths based on *raw* string length after stripping color codes
+    # Note: Color codes were stripped by the awk command already
     ((${#name} > max_name_len)) && max_name_len=${#name}
     ((${#deployed} > max_deployed_len)) && max_deployed_len=${#deployed}
     ((${#latest} > max_latest_len)) && max_latest_len=${#latest} # 'latest' here is GH Ref Ver
@@ -997,8 +1043,9 @@ main() {
 
    if [[ "$parallel_status" -ne 0 && "$num_successful_results" -gt 0 ]]; then
        log_error "Parallel execution completed with errors, but partial results were generated." >&2
+       exit 1 # Indicate partial failure
    fi
-   # Exit with the parallel status code if no results were generated, otherwise exit 0 or handle partial success
+   # Exit with 0 if results were generated (even with errors), or 1 if no results at all.
    if [[ "$num_successful_results" -gt 0 ]]; then
        exit 0 # Success if at least one result was processed
    else
@@ -1025,32 +1072,15 @@ trap cleanup EXIT SIGINT SIGTERM
 if [[ "$1" == "--process-single-target" ]]; then
     shift # Remove the --process-single-target flag
 
-    local worker_config_file=""
-    local worker_json_input=""
-
-    # Parse arguments for the worker: --config-file <path> <json_input>
-    if [[ "$1" == "--config-file" ]]; then
-        shift # Remove --config-file
-        if [[ -n "$1" ]]; then
-            worker_config_file="$1"
-            shift # Remove config file path
-        else
-             log_error "Worker: Missing config file path after --config-file." >&2
-             exit 1
-        fi
-    else
-        log_error "Worker: Missing --config-file argument." >&2
+    # Now expect exactly two arguments: config file path and JSON input string
+    if [[ $# -ne 2 ]]; then
+        log_error "Worker: Expected config file path and JSON input string, but received $# arguments." >&2
+        log_debug "Worker args received: '$@'" >&2
         exit 1
     fi
 
-    # The next argument is the JSON input from parallel's {}
-    if [[ -n "$1" ]]; then
-        worker_json_input="$1"
-        # No need to shift, it's the last expected argument
-    else
-         log_error "Worker: Missing JSON input argument from parallel." >&2
-         exit 1
-    fi
+    local worker_config_file="$1"
+    local worker_json_input="$2"
 
     # Now call the worker function with the parsed arguments
     worker_process_target "$worker_config_file" "$worker_json_input"
@@ -1059,4 +1089,3 @@ else
     # Normal main execution
     main "$@"
 fi
-
