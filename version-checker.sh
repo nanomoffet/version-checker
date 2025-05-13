@@ -10,7 +10,7 @@
 
 # --- Configuration ---
 CONFIG_FILE_CMD_OPT="" # Will be set by -f flag
-DEFAULT_CONFIG_FILE="config.yaml"
+DEFAULT_CONFIG_FILE="config.yml"
 
 TMP_DIR="/tmp/version_checker_$$"
 CACHE_DIR="$HOME/.cache/version_checker"
@@ -40,9 +40,9 @@ declare -a SELECTED_SERVICES
 
 # Command-line flags
 VERBOSE=false
-REGION_FILTER_MODE="off" # 'off', 'primary', 'secondary', 'all'
+REGION_FILTER_MODE="off"       # 'off', 'primary', 'secondary', 'all'
 USER_SPECIFIED_REGION_VALUE="" # Stores the value provided to -r
-PARALLEL_JOBS=4 # Default number of parallel jobs
+PARALLEL_JOBS=4                # Default number of parallel jobs
 
 # --- Helper Functions ---
 log_error() { echo "ERROR: $1" >&2; }
@@ -138,10 +138,10 @@ compare_versions() {
   if [[ -z "$sorted_first" || (""$sorted_first"" != ""$v1"" && ""$sorted_first"" != ""$v2"") ]]; then
     # Fallback for non-standard versions that sort -V might fail on
     if [[ "$v1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ && "$v2" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
-        # If they look like standard versions but sort failed, something is wrong, mark as error
-        return 3
+      # If they look like standard versions but sort failed, something is wrong, mark as error
+      return 3
     fi
-     # Otherwise, maybe one is non-standard while the other is not? Treat as non-comparable.
+    # Otherwise, maybe one is non-standard while the other is not? Treat as non-comparable.
     return 3 # Treat as non-comparable
   fi
 
@@ -152,7 +152,6 @@ compare_versions() {
     return 1 # v1 > v2 (AHEAD)
   fi
 }
-
 
 # --- YAML Parsing ---
 # parse_global_config must be callable by workers if they need global settings
@@ -167,10 +166,10 @@ parse_global_config() {
   if [[ -z "$PROCESS_SINGLE_TARGET_MODE" ]]; then log_info "Using configuration file: $CONFIG_FILE_TO_USE"; fi
 
   # Need to use read to handle multi-line output from yq correctly
-  read -r DEFAULT_CURL_TIMEOUT_SECONDS <<< "$(yq e '.global.default_curl_timeout_seconds' "$CONFIG_FILE_TO_USE")"
-  read -r DEFAULT_VERSION_JQ_QUERY <<< "$(yq e '.global.default_version_jq_query' "$CONFIG_FILE_TO_USE")"
-  read -r SERVICE_URL_TEMPLATE <<< "$(yq e '.global.service_url_template' "$CONFIG_FILE_TO_USE")"
-  read -r GITHUB_RELEASE_CACHE_TTL_SECONDS <<< "$(yq e '.global.github_release_cache_ttl_seconds // "0"' "$CONFIG_FILE_TO_USE")" # Default to 0 if null
+  read -r DEFAULT_CURL_TIMEOUT_SECONDS <<<"$(yq e '.global.default_curl_timeout_seconds' "$CONFIG_FILE_TO_USE")"
+  read -r DEFAULT_VERSION_JQ_QUERY <<<"$(yq e '.global.default_version_jq_query' "$CONFIG_FILE_TO_USE")"
+  read -r SERVICE_URL_TEMPLATE <<<"$(yq e '.global.service_url_template' "$CONFIG_FILE_TO_USE")"
+  read -r GITHUB_RELEASE_CACHE_TTL_SECONDS <<<"$(yq e '.global.github_release_cache_ttl_seconds // "0"' "$CONFIG_FILE_TO_USE")" # Default to 0 if null
 
   if [[ -z "$DEFAULT_CURL_TIMEOUT_SECONDS" || -z "$DEFAULT_VERSION_JQ_QUERY" || -z "$SERVICE_URL_TEMPLATE" ]]; then
     log_error "Global config error: Ensure default_curl_timeout_seconds, default_version_jq_query, service_url_template are set in $CONFIG_FILE_TO_USE."
@@ -203,20 +202,18 @@ parse_defaults_from_config() {
   SELECTED_REGIONS=($(echo "${SELECTED_REGIONS[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
   SELECTED_SERVICES=($(echo "${SELECTED_SERVICES[@]}" | tr ' ' '\n' | grep -vE '^\s*$|null' | sort -u | xargs))
 
+  if [[ "${SELECTED_TENANTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_TENANTS=("all"); fi
+  if [[ "${SELECTED_ENVIRONMENTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_ENVIRONMENTS=("all"); fi
+  if [[ "${SELECTED_REGIONS[*]}" =~ (^| )all( |$) ]]; then SELECTED_REGIONS=("all"); fi # Default regions to "all" if config is empty/null/only whitespace
+  if [[ "${SELECTED_SERVICES[*]}" =~ (^| )all( |$) ]]; then SELECTED_SERVICES=("all"); fi
 
-   if [[ "${SELECTED_TENANTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_TENANTS=("all"); fi
-   if [[ "${SELECTED_ENVIRONMENTS[*]}" =~ (^| )all( |$) ]]; then SELECTED_ENVIRONMENTS=("all"); fi
-   if [[ "${SELECTED_REGIONS[*]}" =~ (^| )all( |$) ]]; then SELECTED_REGIONS=("all"); fi # Default regions to "all" if config is empty/null/only whitespace
-   if [[ "${SELECTED_SERVICES[*]}" =~ (^| )all( |$) ]]; then SELECTED_SERVICES=("all"); fi
+  # Handle case where defaults were empty/null *after* trimming, ensure they become "all"
+  if [[ ${#SELECTED_TENANTS[@]} -eq 0 ]]; then SELECTED_TENANTS=("all"); fi
+  if [[ ${#SELECTED_ENVIRONMENTS[@]} -eq 0 ]]; then SELECTED_ENVIRONMENTS=("all"); fi
+  if [[ ${#SELECTED_REGIONS[@]} -eq 0 ]]; then SELECTED_REGIONS=("all"); fi
+  if [[ ${#SELECTED_SERVICES[@]} -eq 0 ]]; then SELECTED_SERVICES=("all"); fi
 
-   # Handle case where defaults were empty/null *after* trimming, ensure they become "all"
-   if [[ ${#SELECTED_TENANTS[@]} -eq 0 ]]; then SELECTED_TENANTS=("all"); fi
-   if [[ ${#SELECTED_ENVIRONMENTS[@]} -eq 0 ]]; then SELECTED_ENVIRONMENTS=("all"); fi
-   if [[ ${#SELECTED_REGIONS[@]} -eq 0 ]]; then SELECTED_REGIONS=("all"); fi
-   if [[ ${#SELECTED_SERVICES[@]} -eq 0 ]]; then SELECTED_SERVICES=("all"); fi
-
-
-   log_debug "Loaded defaults: Tenants=${SELECTED_TENANTS[*]}, Envs=${SELECTED_ENVIRONMENTS[*]}, Regions=${SELECTED_REGIONS[*]}, Services=${SELECTED_SERVICES[*]}"
+  log_debug "Loaded defaults: Tenants=${SELECTED_TENANTS[*]}, Envs=${SELECTED_ENVIRONMENTS[*]}, Regions=${SELECTED_REGIONS[*]}, Services=${SELECTED_SERVICES[*]}"
 
 }
 
@@ -228,8 +225,8 @@ parse_services_repo_map() {
   mapfile -t service_keys < <(echo "$service_keys_str")
 
   if [[ ${#service_keys[@]} -eq 0 ]]; then
-      log_error "No service keys found in services_repo_map in $CONFIG_FILE_TO_USE."
-      exit 1 # Exit the process (main or worker)
+    log_error "No service keys found in services_repo_map in $CONFIG_FILE_TO_USE."
+    exit 1 # Exit the process (main or worker)
   fi
 
   # Need to make SERVICES_REPO_MAP_DATA available to workers.
@@ -241,20 +238,20 @@ parse_services_repo_map() {
 
   # In the main process, populate the map for filtering and interactive mode
   if [[ -z "$PROCESS_SINGLE_TARGET_MODE" ]]; then
-     for key in "${service_keys[@]}"; do
-       if yq e ".services_repo_map | has(\"$key\")" "$CONFIG_FILE_TO_USE" | grep -q "true"; then
-           SERVICES_REPO_MAP_DATA["$key,display_name"]=$(yq e ".services_repo_map[\"$key\"].display_name // \"$key\"" "$CONFIG_FILE_TO_USE")
-           SERVICES_REPO_MAP_DATA["$key,repo"]=$(yq e ".services_repo_map[\"$key\"].repo" "$CONFIG_FILE_TO_USE")
-           SERVICES_REPO_MAP_DATA["$key,url_param_default"]=$(yq e ".services_repo_map[\"$key\"].url_param_default // \"$key\"" "$CONFIG_FILE_TO_USE")
+    for key in "${service_keys[@]}"; do
+      if yq e ".services_repo_map | has(\"$key\")" "$CONFIG_FILE_TO_USE" | grep -q "true"; then
+        SERVICES_REPO_MAP_DATA["$key,display_name"]=$(yq e ".services_repo_map[\"$key\"].display_name // \"$key\"" "$CONFIG_FILE_TO_USE")
+        SERVICES_REPO_MAP_DATA["$key,repo"]=$(yq e ".services_repo_map[\"$key\"].repo" "$CONFIG_FILE_TO_USE")
+        SERVICES_REPO_MAP_DATA["$key,url_param_default"]=$(yq e ".services_repo_map[\"$key\"].url_param_default // \"$key\"" "$CONFIG_FILE_TO_USE")
 
-           if [[ -z "${SERVICES_REPO_MAP_DATA["$key,repo"]}" || "${SERVICES_REPO_MAP_DATA["$key,repo"]}" == "null" ]]; then
-             log_error "Service key '$key' in services_repo_map is missing 'repo' information or it is null."
-             exit 1
-           fi
-       else
-           log_error "Service key '$key' found in keys but not as a map entry? Skipping."
-       fi
-     done
+        if [[ -z "${SERVICES_REPO_MAP_DATA["$key,repo"]}" || "${SERVICES_REPO_MAP_DATA["$key,repo"]}" == "null" ]]; then
+          log_error "Service key '$key' in services_repo_map is missing 'repo' information or it is null."
+          exit 1
+        fi
+      else
+        log_error "Service key '$key' found in keys but not as a map entry? Skipping."
+      fi
+    done
   fi
   # Workers don't need the full map; they get their service info via JSON input.
 }
@@ -296,9 +293,8 @@ get_latest_github_release_tags() {
     return 1 # Indicate failure
   fi
   echo "$release_tags_str" # Returns multiple tags separated by newlines
-  return 0 # Indicate success
+  return 0                 # Indicate success
 }
-
 
 get_cached_or_fetch_latest_gh_release() {
   local repo_name="$1"
@@ -327,12 +323,12 @@ get_cached_or_fetch_latest_gh_release() {
         echo "$release_tag"
         return 0
       fi
-       log_debug "GH release cache MISS (disk, expired TTL or error marker) for $repo_name"
+      log_debug "GH release cache MISS (disk, expired TTL or error marker) for $repo_name"
     else
       log_debug "GH release cache MISS (disk, no cache files or expired TTL) for $repo_name"
     fi
   else
-      log_debug "GH release cache MISS (disk, no cache files) for $repo_name"
+    log_debug "GH release cache MISS (disk, no cache files) for $repo_name"
   fi
 
   log_debug "Fetching latest GH release for $repo_name..."
@@ -343,8 +339,8 @@ get_cached_or_fetch_latest_gh_release() {
 
   # Handle error results from get_latest_github_release_tags
   if [[ "$fetch_status" -ne 0 ]]; then
-     # get_latest_github_release_tags already echoed the specific error/status
-     : # release_tag already holds the error/status string like ERR_GH_* or NO_RELEASES
+    # get_latest_github_release_tags already echoed the specific error/status
+    :                                # release_tag already holds the error/status string like ERR_GH_* or NO_RELEASES
   elif [[ -z "$release_tag" ]]; then # Should be caught by NO_RELEASES from func, but double check
     release_tag="NO_RELEASES"
   else
@@ -357,7 +353,6 @@ get_cached_or_fetch_latest_gh_release() {
   GITHUB_LATEST_VERSION_CACHE["$repo_name"]="$release_tag" # Cache in memory for this run
   echo "$release_tag"
 }
-
 
 # get_deployed_version is called by workers
 get_deployed_version() {
@@ -388,17 +383,16 @@ get_deployed_version() {
       local http_code_from_json
       http_code_from_json=$(echo "$response" | jq -r '.statusCode // .status // ""' 2>/dev/null)
       if [[ -n "$http_code_from_json" && "$http_code_from_json" != "null" ]]; then
-         deployed_version="HTTP_$http_code_from_json"
+        deployed_version="HTTP_$http_code_from_json"
       elif echo "$response" | grep -q -iE '<html>|<head>|Error'; then
-         deployed_version="ERR_SVC_HTML_RESP"
+        deployed_version="ERR_SVC_HTML_RESP"
       else
-         deployed_version="ERR_SVC_PARSE"
+        deployed_version="ERR_SVC_PARSE"
       fi
     fi
   fi
   echo "$deployed_version"
 }
-
 
 # --- Gum Interactive Configuration ---
 # This only runs in the main process
@@ -427,7 +421,6 @@ run_interactive_config() {
   # Region list for gum is only used if REGION_FILTER_MODE is 'off'
   if [[ ${#all_regions[@]} -gt 0 ]]; then all_regions=("all" "${all_regions[@]}"); fi
 
-
   if [[ ${#all_tenants[@]} -gt 0 ]]; then
     echo "Select tenants to query (current defaults: ${SELECTED_TENANTS[*]}):"
     mapfile -t SELECTED_TENANTS_GUM < <(gum choose --no-limit "${all_tenants[@]}")
@@ -438,62 +431,61 @@ run_interactive_config() {
   if [[ ${#all_environments[@]} -gt 0 ]]; then
     echo "Select environments to query (current defaults: ${SELECTED_ENVIRONMENTS[*]}):"
     mapfile -t SELECTED_ENVIRONMENTS_GUM < <(gum choose --no-limit "${all_environments[@]}")
-     if [[ ${#SELECTED_ENVIRONMENTS_GUM[@]} -gt 0 ]]; then SELECTED_ENVIRONMENTS=("${SELECTED_ENVIRONMENTS_GUM[@]}"); fi
+    if [[ ${#SELECTED_ENVIRONMENTS_GUM[@]} -gt 0 ]]; then SELECTED_ENVIRONMENTS=("${SELECTED_ENVIRONMENTS_GUM[@]}"); fi
   fi
 
   # Handle Region Selection based on REGION_FILTER_MODE
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
-      # When REGION_FILTER_MODE is 'off', region is NOT used for filtering targets based on their configured region_url_param.
-      # However, interactive mode *allows* the user to set default filters
-      # which might be used later if the mode was changed.
-      # So, we still prompt, but explain its limited effect in 'off' mode.
-      log_info "Region filter mode: '$REGION_FILTER_MODE'. Region selection below sets default for '--config' mode, but will NOT filter targets in 'off' mode (queries one instance per service/tenant/env combo)."
-      if [[ ${#all_regions[@]} -gt 0 ]]; then
-          mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit "${all_regions[@]}")
-          # If interactive region selection is empty (user cancelled/selected none),
-          # set SELECTED_REGIONS to "all" as a consistent default state for the filter variable.
-          if [[ ${#SELECTED_REGIONS_GUM[@]} -eq 0 ]]; then
-              log_debug "Interactive region selection was empty. Defaulting SELECTED_REGIONS filter variable to 'all'."
-              SELECTED_REGIONS=("all")
-          else
-              SELECTED_REGIONS=("${SELECTED_REGIONS_GUM[@]}") # Use the gum selection for the filter variable
-          fi
+    # When REGION_FILTER_MODE is 'off', region is NOT used for filtering targets based on their configured region_url_param.
+    # However, interactive mode *allows* the user to set default filters
+    # which might be used later if the mode was changed.
+    # So, we still prompt, but explain its limited effect in 'off' mode.
+    log_info "Region filter mode: '$REGION_FILTER_MODE'. Region selection below sets default for '--config' mode, but will NOT filter targets in 'off' mode (queries one instance per service/tenant/env combo)."
+    if [[ ${#all_regions[@]} -gt 0 ]]; then
+      mapfile -t SELECTED_REGIONS_GUM < <(gum choose --no-limit "${all_regions[@]}")
+      # If interactive region selection is empty (user cancelled/selected none),
+      # set SELECTED_REGIONS to "all" as a consistent default state for the filter variable.
+      if [[ ${#SELECTED_REGIONS_GUM[@]} -eq 0 ]]; then
+        log_debug "Interactive region selection was empty. Defaulting SELECTED_REGIONS filter variable to 'all'."
+        SELECTED_REGIONS=("all")
       else
-          log_info "No regions found in config for interactive selection. Defaulting SELECTED_REGIONS filter variable to 'all'."
-          SELECTED_REGIONS=("all") # No regions to select from, default to all for the filter variable
+        SELECTED_REGIONS=("${SELECTED_REGIONS_GUM[@]}") # Use the gum selection for the filter variable
       fi
+    else
+      log_info "No regions found in config for interactive selection. Defaulting SELECTED_REGIONS filter variable to 'all'."
+      SELECTED_REGIONS=("all") # No regions to select from, default to all for the filter variable
+    fi
   else
-      # For primary, secondary, all modes, interactive region selection is skipped.
-      log_info "Region selection via gum skipped because -r '$USER_SPECIFIED_REGION_VALUE' was used (mode '$REGION_FILTER_MODE')."
-      # SELECTED_REGIONS will retain the default value loaded before this function,
-      # but its value is ignored by the main filter loop when mode is not 'off'.
+    # For primary, secondary, all modes, interactive region selection is skipped.
+    log_info "Region selection via gum skipped because -r '$USER_SPECIFIED_REGION_VALUE' was used (mode '$REGION_FILTER_MODE')."
+    # SELECTED_REGIONS will retain the default value loaded before this function,
+    # but its value is ignored by the main filter loop when mode is not 'off'.
   fi
 
-
   if [[ ${#all_service_display_names[@]} -gt 0 ]]; then
-      echo "Select services to query (current defaults: ${SELECTED_SERVICES[*]}):"
-      # Using display names for gum, then map back to service_keys
-      mapfile -t selected_display_names < <(gum choose --no-limit "${all_service_display_names[@]}")
-      if [[ ${#selected_display_names[@]} -gt 0 ]]; then
-        SELECTED_SERVICES=() # Clear defaults potentially loaded before interactive mode
-        for display_name_with_key in "${selected_display_names[@]}"; do
-          # Extract service_key from "Display Name (service_key)"
-          local skey_from_display=${display_name_with_key##*\(} # Get content after last (
-          skey_from_display=${skey_from_display%\)*}            # Remove closing )
-          SELECTED_SERVICES+=("$skey_from_display")
-        done
-      else
-         # If user selected none, default back to 'all' services or keep previous defaults?
-         # Let's keep the previous defaults if interactive resulted in empty selection
-         log_info "No services selected interactively. Using default services: ${SELECTED_SERVICES[*]}."
-      fi
+    echo "Select services to query (current defaults: ${SELECTED_SERVICES[*]}):"
+    # Using display names for gum, then map back to service_keys
+    mapfile -t selected_display_names < <(gum choose --no-limit "${all_service_display_names[@]}")
+    if [[ ${#selected_display_names[@]} -gt 0 ]]; then
+      SELECTED_SERVICES=() # Clear defaults potentially loaded before interactive mode
+      for display_name_with_key in "${selected_display_names[@]}"; do
+        # Extract service_key from "Display Name (service_key)"
+        local skey_from_display=${display_name_with_key##*\(} # Get content after last (
+        skey_from_display=${skey_from_display%\)*}            # Remove closing )
+        SELECTED_SERVICES+=("$skey_from_display")
+      done
+    else
+      # If user selected none, default back to 'all' services or keep previous defaults?
+      # Let's keep the previous defaults if interactive resulted in empty selection
+      log_info "No services selected interactively. Using default services: ${SELECTED_SERVICES[*]}."
+    fi
   fi
 
   # For each *selected* service, prompt for GitHub version UNLESS 'all' services selected
   local effective_selected_services=("${SELECTED_SERVICES[@]}")
   if [[ "${effective_selected_services[0]}" == "all" ]]; then
-     # If 'all' is selected, use all configured service keys from the map for the GH prompt step
-     effective_selected_services=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
+    # If 'all' is selected, use all configured service keys from the map for the GH prompt step
+    effective_selected_services=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
   fi
 
   if [[ ${#effective_selected_services[@]} -gt 0 ]]; then
@@ -522,8 +514,8 @@ run_interactive_config() {
           USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="$chosen_version"
         fi
       else
-          log_error "Service key '$service_key_to_configure' selected but not found in services_repo_map. Skipping GH version selection for this service."
-          USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Default to latest if repo unknown
+        log_error "Service key '$service_key_to_configure' selected but not found in services_repo_map. Skipping GH version selection for this service."
+        USER_SELECTED_GH_VERSIONS["$service_key_to_configure"]="latest" # Default to latest if repo unknown
       fi
     done
   else
@@ -535,90 +527,88 @@ run_interactive_config() {
 # --- Worker Function for Parallel Processing ---
 # This function is designed to be called by GNU parallel
 worker_process_target() {
-    # Set a flag so helper functions know they are in a worker
-    export PROCESS_SINGLE_TARGET_MODE=true
+  # Set a flag so helper functions know they are in a worker
+  export PROCESS_SINGLE_TARGET_MODE=true
 
-    # Re-parse necessary global config in the worker process
-    # Only essential config needed by get_deployed_version
-    parse_global_config
+  # Re-parse necessary global config in the worker process
+  # Only essential config needed by get_deployed_version
+  parse_global_config
 
-    # Read the combined JSON input from stdin
-    local combined_json_input
-    if ! read -r combined_json_input; then
-        log_error "Worker received no input JSON."
-        exit 1
-    fi
+  # Read the combined JSON input from stdin
+  local combined_json_input
+  if ! read -r combined_json_input; then
+    log_error "Worker received no input JSON."
+    exit 1
+  fi
 
-    # Parse the input JSON
-    local target_json github_reference_version service_display_name service_repo
-    target_json=$(echo "$combined_json_input" | jq -c '.target')
-    github_reference_version=$(echo "$combined_json_input" | jq -r '.github_reference_version')
-    # Also parse service details passed in the JSON
-    service_display_name=$(echo "$combined_json_input" | jq -r '.service_display_name')
-    service_repo=$(echo "$combined_json_input" | jq -r '.service_repo') # Although not used in process_target, kept for completeness
-    local original_region_url_param=$(echo "$combined_json_input" | jq -r '.original_region_url_param') # Original region for report
+  # Parse the input JSON
+  local target_json github_reference_version service_display_name service_repo
+  target_json=$(echo "$combined_json_input" | jq -c '.target')
+  github_reference_version=$(echo "$combined_json_input" | jq -r '.github_reference_version')
+  # Also parse service details passed in the JSON
+  service_display_name=$(echo "$combined_json_input" | jq -r '.service_display_name')
+  service_repo=$(echo "$combined_json_input" | jq -r '.service_repo')                                 # Although not used in process_target, kept for completeness
+  local original_region_url_param=$(echo "$combined_json_input" | jq -r '.original_region_url_param') # Original region for report
 
-    local target_name service_key environment tenant region_url_param_for_curl service_url_param_override
-    target_name=$(echo "$target_json" | jq -r '.name // "Unnamed Target"')
-    service_key=$(echo "$target_json" | jq -r '.service_key')
-    environment=$(echo "$target_json" | jq -r '.environment')
-    tenant=$(echo "$target_json" | jq -r '.tenant')
-    # Get the effective region_url_param to use for CURL from the input JSON
-    region_url_param_for_curl=$(echo "$combined_json_input" | jq -r '.region_url_param_for_curl')
-    service_url_param_override=$(echo "$target_json" | jq -r '.service_url_param_override // ""') # Re-parse from target_json
+  local target_name service_key environment tenant region_url_param_for_curl service_url_param_override
+  target_name=$(echo "$target_json" | jq -r '.name // "Unnamed Target"')
+  service_key=$(echo "$target_json" | jq -r '.service_key')
+  environment=$(echo "$target_json" | jq -r '.environment')
+  tenant=$(echo "$target_json" | jq -r '.tenant')
+  # Get the effective region_url_param to use for CURL from the input JSON
+  region_url_param_for_curl=$(echo "$combined_json_input" | jq -r '.region_url_param_for_curl')
+  service_url_param_override=$(echo "$target_json" | jq -r '.service_url_param_override // ""') # Re-parse from target_json
 
-    local service_url_param_default=$(echo "$combined_json_input" | jq -r '.service_url_param_default') # Get from input JSON
+  local service_url_param_default=$(echo "$combined_json_input" | jq -r '.service_url_param_default') # Get from input JSON
 
-    local effective_service_url_param="$service_url_param_default"
-     if [[ -n "$service_url_param_override" && "$service_url_param_override" != "null" ]]; then
-       effective_service_url_param="$service_url_param_override"
-     fi
+  local effective_service_url_param="$service_url_param_default"
+  if [[ -n "$service_url_param_override" && "$service_url_param_override" != "null" ]]; then
+    effective_service_url_param="$service_url_param_override"
+  fi
 
+  # Fetch the deployed version using the determined region_url_param_for_curl
+  local deployed_version
+  deployed_version=$(get_deployed_version "$effective_service_url_param" "$region_url_param_for_curl" "$tenant" "$environment" "$DEFAULT_VERSION_JQ_QUERY")
 
-    # Fetch the deployed version using the determined region_url_param_for_curl
-    local deployed_version
-    deployed_version=$(get_deployed_version "$effective_service_url_param" "$region_url_param_for_curl" "$tenant" "$environment" "$DEFAULT_VERSION_JQ_QUERY")
+  local status_text raw_status_text
+  # Comparison logic remains the same, now using the pre-determined github_reference_version
+  if [[ "$github_reference_version" == ERR_GH* || "$github_reference_version" == "N/A_GH_FETCH" ]]; then
+    status_text="${RED}${github_reference_version}${NC}"
+    raw_status_text="GH_ERROR"
+  elif [[ "$github_reference_version" == "NO_RELEASES" ]]; then
+    status_text="${CYAN}NO_GH_RELEASES${NC}" # Using Cyan for NO_RELEASES for differentiation
+    raw_status_text="NO_RELEASES"
+  elif [[ "$deployed_version" == TIMEOUT_SVC* || "$deployed_version" == ERR_SVC* || "$deployed_version" == HTTP_* || "$deployed_version" == N/A* ]]; then
+    status_text="${RED}${deployed_version}${NC}"
+    raw_status_text="SVC_ERROR"
+  else
+    compare_versions "$deployed_version" "$github_reference_version"
+    local comparison_result=$?
+    case $comparison_result in
+    0)
+      status_text="${GREEN}UP-TO-DATE${NC}"
+      raw_status_text="UP-TO-DATE"
+      ;;
+    1)
+      status_text="${BLUE}AHEAD${NC}"
+      raw_status_text="AHEAD"
+      ;; # Deployed is newer
+    2)
+      status_text="${YELLOW}OUTDATED${NC}"
+      raw_status_text="OUTDATED"
+      ;; # Deployed is older
+    *)
+      status_text="${YELLOW}CMP_ERR ($deployed_version vs $github_reference_version)${NC}" # Changed from NEEDS_CMP_FIX
+      raw_status_text="UNKNOWN_CMP"
+      ;; # Fallback
+    esac
+  fi
 
-    local status_text raw_status_text
-    # Comparison logic remains the same, now using the pre-determined github_reference_version
-    if [[ "$github_reference_version" == ERR_GH* || "$github_reference_version" == "N/A_GH_FETCH" ]]; then
-      status_text="${RED}${github_reference_version}${NC}"
-      raw_status_text="GH_ERROR"
-    elif [[ "$github_reference_version" == "NO_RELEASES" ]]; then
-      status_text="${CYAN}NO_GH_RELEASES${NC}" # Using Cyan for NO_RELEASES for differentiation
-      raw_status_text="NO_RELEASES"
-    elif [[ "$deployed_version" == TIMEOUT_SVC* || "$deployed_version" == ERR_SVC* || "$deployed_version" == HTTP_* || "$deployed_version" == N/A* ]]; then
-      status_text="${RED}${deployed_version}${NC}"
-      raw_status_text="SVC_ERROR"
-    else
-      compare_versions "$deployed_version" "$github_reference_version"
-      local comparison_result=$?
-      case $comparison_result in
-      0)
-        status_text="${GREEN}UP-TO-DATE${NC}"
-        raw_status_text="UP-TO-DATE"
-        ;;
-      1)
-        status_text="${BLUE}AHEAD${NC}"
-        raw_status_text="AHEAD"
-        ;; # Deployed is newer
-      2)
-        status_text="${YELLOW}OUTDATED${NC}"
-        raw_status_text="OUTDATED"
-        ;; # Deployed is older
-      *)
-        status_text="${YELLOW}CMP_ERR ($deployed_version vs $github_reference_version)${NC}" # Changed from NEEDS_CMP_FIX
-        raw_status_text="UNKNOWN_CMP"
-        ;; # Fallback
-      esac
-    fi
-
-    # Echo the result line in the required format.
-    # Use the original_region_url_param for the report column.
-    echo "$target_name|$deployed_version|$github_reference_version|$status_text|$service_display_name|$tenant|$environment|$original_region_url_param|$raw_status_text"
-    exit 0 # Worker successfully processed the target
+  # Echo the result line in the required format.
+  # Use the original_region_url_param for the report column.
+  echo "$target_name|$deployed_version|$github_reference_version|$status_text|$service_display_name|$tenant|$environment|$original_region_url_param|$raw_status_text"
+  exit 0 # Worker successfully processed the target
 }
-
 
 # --- Main Logic (runs in the main process) ---
 main() {
@@ -634,7 +624,7 @@ main() {
       USER_SPECIFIED_REGION_VALUE="$OPTARG"
       # Validate region mode
       case "$USER_SPECIFIED_REGION_VALUE" in
-      off|primary|secondary|all) REGION_FILTER_MODE="$USER_SPECIFIED_REGION_VALUE" ;;
+      off | primary | secondary | all) REGION_FILTER_MODE="$USER_SPECIFIED_REGION_VALUE" ;;
       *)
         log_error "Invalid region mode: '$USER_SPECIFIED_REGION_VALUE'. Allowed modes: 'off', 'primary', 'secondary', 'all'."
         print_usage
@@ -644,11 +634,11 @@ main() {
       ;;
     j)
       if [[ "$OPTARG" =~ ^[1-9][0-9]*$ ]]; then
-          PARALLEL_JOBS="$OPTARG"
+        PARALLEL_JOBS="$OPTARG"
       else
-          log_error "Invalid value for -j option. Number of jobs must be a positive integer."
-          print_usage
-          exit 1
+        log_error "Invalid value for -j option. Number of jobs must be a positive integer."
+        print_usage
+        exit 1
       fi
       ;;
     h)
@@ -672,13 +662,12 @@ main() {
   # --- Check for worker mode call ---
   # If --process-single-target is passed, enter worker mode and exit
   if [[ "$1" == "--process-single-target" ]]; then
-      worker_process_target
-      exit $? # Exit with the worker's status
+    worker_process_target
+    exit $? # Exit with the worker's status
   fi
   # --- End worker mode check ---
 
-
-  check_deps # Checks for parallel now
+  check_deps              # Checks for parallel now
   parse_global_config     # Uses CONFIG_FILE_CMD_OPT or default
   parse_services_repo_map # Same
 
@@ -694,10 +683,10 @@ main() {
     # Get all configured service keys from the map
     local all_configured_service_keys=($(yq e '.services_repo_map | keys | .[]' "$CONFIG_FILE_TO_USE" | xargs))
     for skey in "${all_configured_service_keys[@]}"; do
-         # Only set to latest if no user selection was made (which wouldn't happen in non-interactive mode anyway)
-         if [[ ! -v USER_SELECTED_GH_VERSIONS["$skey"] ]]; then
-             USER_SELECTED_GH_VERSIONS["$skey"]="latest"
-         fi
+      # Only set to latest if no user selection was made (which wouldn't happen in non-interactive mode anyway)
+      if [[ ! -v USER_SELECTED_GH_VERSIONS["$skey"] ]]; then
+        USER_SELECTED_GH_VERSIONS["$skey"]="latest"
+      fi
     done
     log_info "Version comparison will use latest GitHub release for services not specifically configured (default)."
   fi
@@ -718,15 +707,13 @@ main() {
   # Also tracks instance count for 'primary'/'secondary' region modes
   declare -A service_tenant_env_selection_tracker
 
-
   log_info "Filter criteria: Tenants=[${SELECTED_TENANTS[*]}], Envs=[${SELECTED_ENVIRONMENTS[*]}], Services=[${SELECTED_SERVICES[*]}]"
   log_info "Region mode: '$REGION_FILTER_MODE'."
   if [[ "$REGION_FILTER_MODE" == "off" ]]; then
-      log_info "Region filtering is OFF. Querying only the FIRST instance encountered for each unique service/tenant/env combo. Region URL parameter will be empty for CURL."
+    log_info "Region filtering is OFF. Querying only the FIRST instance encountered for each unique service/tenant/env combo. Region URL parameter will be empty for CURL."
   else
-      log_info "Region filtering/selection is active based on mode '$REGION_FILTER_MODE'."
+    log_info "Region filtering/selection is active based on mode '$REGION_FILTER_MODE'."
   fi
-
 
   for i in $(seq 0 $((num_all_targets - 1))); do
     local current_target_json
@@ -740,19 +727,18 @@ main() {
 
     # Basic validation for essential fields
     if [[ "$t_service_key" == "null" || "$t_tenant" == "null" || "$t_env" == "null" || "$t_region" == "null" ]]; then
-        log_debug "Skipping target '$t_name' (index $i) due to missing service_key, tenant, environment, or region_url_param."
-        continue
+      log_debug "Skipping target '$t_name' (index $i) due to missing service_key, tenant, environment, or region_url_param."
+      continue
     fi
 
     # Check if service_key exists in the map data, skip if not
     if [[ ! -v SERVICES_REPO_MAP_DATA["$t_service_key,repo"] ]]; then
-        log_debug "Skipping target '$t_name' (index $i) with unknown service_key '$t_service_key'."
-        # Add a dummy result line for the report indicating an unknown service key
-        local dummy_result="$t_name|N/A_UNKNOWN_SVC|N/A_UNKNOWN_SVC|${RED}UNKNOWN_SERVICE${NC}|Unknown Service ($t_service_key)|$t_tenant|$t_env|$t_region|UNKNOWN_SERVICE"
-        targets_to_process_json_array+=("{\"target\": $current_target_json, \"github_reference_version\": \"N/A_UNKNOWN_SVC\", \"service_display_name\": \"Unknown Service ($t_service_key)\", \"service_repo\": \"N/A\", \"original_region_url_param\": \"$t_region\", \"region_url_param_for_curl\": \"N/A\" }") # Pass dummy info to worker
-        continue # Skip processing this target further
+      log_debug "Skipping target '$t_name' (index $i) with unknown service_key '$t_service_key'."
+      # Add a dummy result line for the report indicating an unknown service key
+      local dummy_result="$t_name|N/A_UNKNOWN_SVC|N/A_UNKNOWN_SVC|${RED}UNKNOWN_SERVICE${NC}|Unknown Service ($t_service_key)|$t_tenant|$t_env|$t_region|UNKNOWN_SERVICE"
+      targets_to_process_json_array+=("{\"target\": $current_target_json, \"github_reference_version\": \"N/A_UNKNOWN_SVC\", \"service_display_name\": \"Unknown Service ($t_service_key)\", \"service_repo\": \"N/A\", \"original_region_url_param\": \"$t_region\", \"region_url_param_for_curl\": \"N/A\" }") # Pass dummy info to worker
+      continue                                                                                                                                                                                                                                                                                                   # Skip processing this target further
     fi
-
 
     # Apply Tenant, Environment, and Service filters (Always applied first)
     local tenant_match=false env_match=false service_match=false
@@ -768,45 +754,45 @@ main() {
     # Apply Region filter/selection based on REGION_FILTER_MODE (Applied *after* other filters pass)
     local region_selection_passed=false
     local count_key="${t_service_key}-${t_tenant}-${t_env}" # Key for tracking service/tenant/env combos
-    local region_url_param_for_curl="$t_region" # Default CURL param is the configured region
+    local region_url_param_for_curl="$t_region"             # Default CURL param is the configured region
 
     case "$REGION_FILTER_MODE" in
-      off)
-        # When mode is 'off', select only the first instance encountered for this combo.
-        # Check if we've already selected an instance for this key.
-        # Associative arrays return 0 for unset keys in arithmetic context.
-        if (( service_tenant_env_selection_tracker["$count_key"] == 0 )); then
-             region_selection_passed=true
-             # Mark this combo as selected (increment count to 1)
-             service_tenant_env_selection_tracker["$count_key"]=1
-             region_url_param_for_curl="" # Region param is empty for CURL in 'off' mode
-             log_debug "Target '$t_name' (index $i) passed region selection (mode 'off', first instance for combo '$count_key'). Region URL param for CURL set to \"\"."
-        else
-             log_debug "Skipping target '$t_name' (index $i): Already selected an instance for combo '$count_key' (mode 'off')."
-             region_selection_passed=false # Skip subsequent instances for this combo
-        fi
-        ;;
-      all)
-        # When mode is 'all', all targets matching other filters also pass the region filter stage.
+    off)
+      # When mode is 'off', select only the first instance encountered for this combo.
+      # Check if we've already selected an instance for this key.
+      # Associative arrays return 0 for unset keys in arithmetic context.
+      if ((service_tenant_env_selection_tracker["$count_key"] == 0)); then
         region_selection_passed=true
-        log_debug "Target '$t_name' (index $i) passed region filter (mode 'all'). Region URL param for CURL is '$t_region'."
-        ;;
-      primary|secondary)
-        # Count instances for this service/tenant/env combination encountered so far in the loop
-        service_tenant_env_selection_tracker["$count_key"]=$((service_tenant_env_selection_tracker["$count_key"] + 1))
-        local current_instance_number=${service_tenant_env_selection_tracker["$count_key"]}
+        # Mark this combo as selected (increment count to 1)
+        service_tenant_env_selection_tracker["$count_key"]=1
+        region_url_param_for_curl="" # Region param is empty for CURL in 'off' mode
+        log_debug "Target '$t_name' (index $i) passed region selection (mode 'off', first instance for combo '$count_key'). Region URL param for CURL set to \"\"."
+      else
+        log_debug "Skipping target '$t_name' (index $i): Already selected an instance for combo '$count_key' (mode 'off')."
+        region_selection_passed=false # Skip subsequent instances for this combo
+      fi
+      ;;
+    all)
+      # When mode is 'all', all targets matching other filters also pass the region filter stage.
+      region_selection_passed=true
+      log_debug "Target '$t_name' (index $i) passed region filter (mode 'all'). Region URL param for CURL is '$t_region'."
+      ;;
+    primary | secondary)
+      # Count instances for this service/tenant/env combination encountered so far in the loop
+      service_tenant_env_selection_tracker["$count_key"]=$((service_tenant_env_selection_tracker["$count_key"] + 1))
+      local current_instance_number=${service_tenant_env_selection_tracker["$count_key"]}
 
-        if [[ "$REGION_FILTER_MODE" == "primary" && "$current_instance_number" -eq 1 ]]; then
-          region_selection_passed=true
-          log_debug "Target '$t_name' (index $i) passed region selection (mode 'primary', instance #$current_instance_number). Region URL param for CURL is '$t_region'."
-        elif [[ "$REGION_FILTER_MODE" == "secondary" && "$current_instance_number" -eq 2 ]]; then
-          region_selection_passed=true
-          log_debug "Target '$t_name' (index $i) passed region selection (mode 'secondary', instance #$current_instance_number). Region URL param for CURL is '$t_region'."
-        else
-           log_debug "Skipping target '$t_name' (index $i): Instance #$current_instance_number for $count_key does not match region_mode '$REGION_FILTER_MODE'."
-           region_selection_passed=false # Skip instances beyond the primary/secondary
-        fi
-        ;;
+      if [[ "$REGION_FILTER_MODE" == "primary" && "$current_instance_number" -eq 1 ]]; then
+        region_selection_passed=true
+        log_debug "Target '$t_name' (index $i) passed region selection (mode 'primary', instance #$current_instance_number). Region URL param for CURL is '$t_region'."
+      elif [[ "$REGION_FILTER_MODE" == "secondary" && "$current_instance_number" -eq 2 ]]; then
+        region_selection_passed=true
+        log_debug "Target '$t_name' (index $i) passed region selection (mode 'secondary', instance #$current_instance_number). Region URL param for CURL is '$t_region'."
+      else
+        log_debug "Skipping target '$t_name' (index $i): Instance #$current_instance_number for $count_key does not match region_mode '$REGION_FILTER_MODE'."
+        region_selection_passed=false # Skip instances beyond the primary/secondary
+      fi
+      ;;
     esac
 
     # If all filters/selection pass, determine GH version and add to list for parallel processing
@@ -821,13 +807,13 @@ main() {
         github_reference_version="${USER_SELECTED_GH_VERSIONS["$t_service_key"]}"
         log_debug "Using user-selected GH version ${github_reference_version} for $t_service_key"
       elif [[ -v USER_SELECTED_GH_VERSIONS["$t_service_key"] && "${USER_SELECTED_GH_VERSIONS["$t_service_key"]}" == "latest" ]]; then
-         # Otherwise, fetch or use the cached latest release IF 'latest' was the selected mode
-         github_reference_version=$(get_cached_or_fetch_latest_gh_release "$service_repo")
-         log_debug "Using latest GH version ${github_reference_version} (cached or fetched) for $t_service_key"
+        # Otherwise, fetch or use the cached latest release IF 'latest' was the selected mode
+        github_reference_version=$(get_cached_or_fetch_latest_gh_release "$service_repo")
+        log_debug "Using latest GH version ${github_reference_version} (cached or fetched) for $t_service_key"
       else
-         # Fallback if service_key wasn't in USER_SELECTED_GH_VERSIONS (shouldn't happen if defaults are loaded correctly)
-         log_debug "No GH version specified for $t_service_key, defaulting to latest."
-         github_reference_version=$(get_cached_or_fetch_latest_gh_release "$service_repo")
+        # Fallback if service_key wasn't in USER_SELECTED_GH_VERSIONS (shouldn't happen if defaults are loaded correctly)
+        log_debug "No GH version specified for $t_service_key, defaulting to latest."
+        github_reference_version=$(get_cached_or_fetch_latest_gh_release "$service_repo")
       fi
 
       # Construct the JSON object to pass to the worker
@@ -865,36 +851,36 @@ main() {
   log_info "Starting parallel processing..." >&2 # Log to stderr to keep stdout clean
   declare -a parallel_output_lines=()
   local parallel_cmd=(
-      parallel
-      --jobs "$PARALLEL_JOBS"
-      --results "$TMP_DIR/parallel_results" # Collect results in a temporary directory
-      --pipe
-      --colsep '\0' # Use null separator if needed, but piping lines works too
-      --retries 1 # Retry failed jobs once
-      --status --eta # Show progress
-      --bar # Show progress bar
-      "$0 --process-single-target $CONFIG_FILE_CMD_OPT" # The worker command, passing optional config file
+    parallel
+    --jobs "$PARALLEL_JOBS"
+    --results "$TMP_DIR/parallel_results" # Collect results in a temporary directory
+    --pipe
+    --colsep '\0'                                     # Use null separator if needed, but piping lines works too
+    --retries 1                                       # Retry failed jobs once
+    --status --eta                                    # Show progress
+    --bar                                             # Show progress bar
+    "$0 --process-single-target $CONFIG_FILE_CMD_OPT" # The worker command, passing optional config file
   )
 
   # Export VERBOSE flag so workers can respect it
   export VERBOSE
 
   # Print the JSON objects to parallel's stdin
-  printf "%s\n" "${targets_to_process_json_array[@]}" | "${parallel_cmd[@]}" > "$TMP_DIR/parallel_raw_output.txt" 2> "$TMP_DIR/parallel_stderr.txt"
+  printf "%s\n" "${targets_to_process_json_array[@]}" | "${parallel_cmd[@]}" >"$TMP_DIR/parallel_raw_output.txt" 2>"$TMP_DIR/parallel_stderr.txt"
   local parallel_status=$?
 
   if [[ "$parallel_status" -ne 0 ]]; then
-      log_error "Parallel execution failed with status $parallel_status." >&2
-      if [[ -f "$TMP_DIR/parallel_stderr.txt" ]]; then
-          log_error "Parallel stderr output:" >&2
-          cat "$TMP_DIR/parallel_stderr.txt" >&2
-      fi
-      # Continue to generate report from successful jobs if any
+    log_error "Parallel execution failed with status $parallel_status." >&2
+    if [[ -f "$TMP_DIR/parallel_stderr.txt" ]]; then
+      log_error "Parallel stderr output:" >&2
+      cat "$TMP_DIR/parallel_stderr.txt" >&2
+    fi
+    # Continue to generate report from successful jobs if any
   fi
 
   # Read the collected output lines from the temporary file
   if [[ -f "$TMP_DIR/parallel_raw_output.txt" ]]; then
-    mapfile -t results_array < "$TMP_DIR/parallel_raw_output.txt"
+    mapfile -t results_array <"$TMP_DIR/parallel_raw_output.txt"
   else
     log_error "Parallel raw output file not found: $TMP_DIR/parallel_raw_output.txt" >&2
     results_array=() # Empty array
@@ -903,8 +889,8 @@ main() {
   local num_successful_results=${#results_array[@]}
 
   if [[ "$num_successful_results" -eq 0 ]]; then
-     log_info "No successful results to report after parallel processing."
-     exit 0
+    log_info "No successful results to report after parallel processing."
+    exit 0
   fi
 
   log_info "All eligible targets processed. Generating report..." >&2 # Log to stderr
@@ -956,7 +942,7 @@ main() {
   printf "%${total_width}s\n" "" | tr " " "-"
 
   declare -a sorted_results=()
-   while IFS= read -r line; do sorted_results+=("$line"); done < <(
+  while IFS= read -r line; do sorted_results+=("$line"); done < <(
     printf "%s\n" "${results_array[@]}" |
       awk -F'|' '
       # Function to assign a sort key based on raw status string (9th field)
@@ -974,7 +960,6 @@ main() {
       sort -t'|' -k1,1n -k6,6 -k7,7 -k5,5 -k8,8 | cut -d'|' -f2- # Cut the added status key
   )
 
-
   for line in "${sorted_results[@]}"; do
     local target_name_val deployed_val gh_ref_ver_val status_val service_val tenant_val env_val region_val _
     # Read into variables, discard the last field (raw_status_text)
@@ -990,7 +975,7 @@ main() {
     log_debug "Removing $TMP_DIR..." >&2
     rm -rf "$TMP_DIR"
   else
-     log_debug "Cleanup skipped for TMP_DIR: '$TMP_DIR' (either empty, unexpected pattern, or non-existent)." >&2
+    log_debug "Cleanup skipped for TMP_DIR: '$TMP_DIR' (either empty, unexpected pattern, or non-existent)." >&2
   fi
 }
 
@@ -1010,26 +995,26 @@ trap cleanup EXIT SIGINT SIGTERM
 # Check for worker mode *before* calling main's full logic
 # This allows parallel to invoke the script for workers
 if [[ "$1" == "--process-single-target" ]]; then
-    # Call the worker function and pass remaining arguments (like -f config.yaml)
-    # Need to manually shift the worker flag
-    shift
-    # Re-parse options specific to the worker, primarily -f
-     while getopts ":f:" opt; do
-        case $opt in
-        f) CONFIG_FILE_CMD_OPT="$OPTARG" ;;
-        \?)
-          log_error "Invalid option in worker: -$OPTARG"
-          exit 1
-          ;;
-        :)
-          log_error "Option -$OPTARG requires an argument in worker."
-          exit 1
-          ;;
-        esac
-      done
-      shift $((OPTIND - 1)) # Remove parsed options from worker args
-      worker_process_target
+  # Call the worker function and pass remaining arguments (like -f config.yaml)
+  # Need to manually shift the worker flag
+  shift
+  # Re-parse options specific to the worker, primarily -f
+  while getopts ":f:" opt; do
+    case $opt in
+    f) CONFIG_FILE_CMD_OPT="$OPTARG" ;;
+    \?)
+      log_error "Invalid option in worker: -$OPTARG"
+      exit 1
+      ;;
+    :)
+      log_error "Option -$OPTARG requires an argument in worker."
+      exit 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1)) # Remove parsed options from worker args
+  worker_process_target
 else
-    # Normal main execution
-    main "$@"
+  # Normal main execution
+  main "$@"
 fi
