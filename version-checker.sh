@@ -317,6 +317,8 @@ get_deployed_version() {
   echo "$deployed_version"
 }
 
+
+
 run_interactive_config() {
   CONFIG_FILE_TO_USE="${CONFIG_FILE_CMD_OPT:-$DEFAULT_CONFIG_FILE}"
   log_info "Starting interactive configuration using gum..."
@@ -371,10 +373,11 @@ run_interactive_config() {
     if [[ ${#selected_display_names[@]} -gt 0 ]]; then
       SELECTED_SERVICES=()
       for display_name_with_key in "${selected_display_names[@]}"; do
-        local skey_from_display=${display_name_with_key##*$$}
-        skey_from_display=${skey_from_display%$$*}
+        local skey_from_display="${display_name_with_key##*\(}" 
+        skey_from_display="${skey_from_display%)}"    
         SELECTED_SERVICES+=("$skey_from_display")
       done
+      log_debug "Interactively selected services (keys): ${SELECTED_SERVICES[*]}"
     else
       log_info "No services selected interactively. Using default services: ${SELECTED_SERVICES[*]}."
     fi
