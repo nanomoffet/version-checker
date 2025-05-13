@@ -8,8 +8,9 @@ global:
 defaults:
   tenants: ["all"] # Default filter: can be ["all"] or a list e.g., ["peacock", "nowtv"]
   environments: ["all"] # Default filter: can be ["all"] or a list e.g., ["dev", "prod"]
-  regions: ["all"] # Default filter: can be ["all"] or a list e.g., ["-us-east-2", "-eu-central-1"]
+  regions: ["off"] # Default filter updated to include "off", "primary", "secondary", or "all"
   services: ["all"] # Default filter: can be ["all"] or a list of service_keys e.g., ["ingestor-service"]
+  verbose: false # New option to control verbosity; set to true to show service URLs
 
 # List of all services and their GitHub repositories
 # url_param_default set based on Earth tenant rules. Overrides used where needed.

@@ -9,7 +9,7 @@
 
 # --- Configuration ---
 CONFIG_FILE_CMD_OPT="" # Will be set by -f flag
-DEFAULT_CONFIG_FILE="config.yaml"
+DEFAULT_CONFIG_FILE="config.yml"
 
 TMP_DIR="/tmp/version_checker_$$"
 CACHE_DIR="$HOME/.cache/version_checker"
@@ -427,35 +427,53 @@ process_target() {
   echo "$target_name|$deployed_version|$github_reference_version|$status_text|$service_display_name|$tenant|$environment|$region_url_param|$raw_status_text"
 }
 
-# --- Main Logic ---
+
+# ---- [ABOVE main()] ----
+
+SHOW_VERBOSE_URLS=false
+REGION_FLAG="off"
+
+# Parse our new CLI flags in addition to the others
 main() {
-  # Command line argument parsing
   INTERACTIVE_CONFIG_MODE=false
-  while getopts ":f:ch" opt; do
-    case $opt in
-    f) CONFIG_FILE_CMD_OPT="$OPTARG" ;;
-    c) INTERACTIVE_CONFIG_MODE=true ;;
-    h)
-      print_usage
-      exit 0
-      ;;
-    \?)
-      log_error "Invalid option: -$OPTARG"
-      print_usage
-      exit 1
-      ;;
-    :)
-      log_error "Option -$OPTARG requires an argument."
-      print_usage
-      exit 1
-      ;;
+  # Handle new flags -v/--verbose, --region <val>
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+      -f)
+        CONFIG_FILE_CMD_OPT="$2"
+        shift 2
+        ;;
+      -c)
+        INTERACTIVE_CONFIG_MODE=true
+        shift
+        ;;
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      -v|--verbose)
+        SHOW_VERBOSE_URLS=true
+        shift
+        ;;
+      --region)
+        if [[ "$2" == "primary" || "$2" == "secondary" || "$2" == "all" || "$2" == "off" ]]; then
+          REGION_FLAG="$2"
+        else
+          log_error "Invalid value for --region. Allowed: off, primary, secondary, all"
+          exit 1
+        fi
+        shift 2
+        ;;
+      *)
+        break
+        ;;
     esac
   done
-  shift $((OPTIND - 1)) # Remove parsed options
 
   check_deps
-  parse_global_config     # Uses CONFIG_FILE_CMD_OPT or default
-  parse_services_repo_map # Same
+  parse_global_config
+  parse_services_repo_map
 
   if $INTERACTIVE_CONFIG_MODE; then
     run_interactive_config
@@ -487,6 +505,77 @@ main() {
     t_service_key=$(echo "$current_target_json" | jq -r '.service_key')
 
     # Apply filters
+  # -- Filter the targets according to REGION_FLAG --
+  declare -a targets_after_region=()
+  for target in "${filtered_targets_json_array[@]}"; do
+    region_val=$(echo "$target" | jq -r '.region_url_param // ""')
+    case "$REGION_FLAG" in
+      "off")
+        targets_after_region+=("$target")
+        ;;
+      "primary")
+        # Assume first region instance in sorted list is "primary"
+        # See if this is the first entry for this service/env/tenant combo
+        skey=$(echo "$target" | jq -r '.service_key')
+        env=$(echo "$target" | jq -r '.environment')
+        tenant=$(echo "$target" | jq -r '.tenant')
+        combo_id="${skey}|${env}|${tenant}"
+        if [[ -z "${_seen_combos_primary[$combo_id]}" ]]; then
+          targets_after_region+=("$target")
+          _seen_combos_primary["$combo_id"]=1
+        fi
+        ;;
+      "secondary")
+        # Allow a second entry per combo (assumes sorted input)
+        skey=$(echo "$target" | jq -r '.service_key')
+        env=$(echo "$target" | jq -r '.environment')
+        tenant=$(echo "$target" | jq -r '.tenant')
+        combo_id="${skey}|${env}|${tenant}"
+        if [[ -z "${_secondary_count[$combo_id]}" ]]; then
+          _secondary_count["$combo_id"]=1
+          continue
+        elif [[ "${_secondary_count[$combo_id]}" -eq 1 ]]; then
+          targets_after_region+=("$target")
+          _secondary_count["$combo_id"]=2
+        fi
+        ;;
+      "all")
+        targets_after_region+=("$target")
+        ;;
+    esac
+  done
+
+  num_filtered_targets=${#targets_after_region[@]}
+  if [[ "$num_filtered_targets" -eq 0 ]]; then
+    log_info "No targets match the current filter criteria (region filter). Exiting."
+    exit 0
+  fi
+  log_info "Processing $num_filtered_targets targets sequentially (after region filtering)."
+
+  # --------- VERBOSE mode: print the service URLs to be used ---------
+  if $SHOW_VERBOSE_URLS; then
+    echo "Service URLs to be called:"
+    for target_json in "${targets_after_region[@]}"; do
+      # Use the service URL template to compose the URL
+      service_key=$(echo "$target_json" | jq -r '.service_key')
+      environment=$(echo "$target_json" | jq -r '.environment')
+      tenant=$(echo "$target_json" | jq -r '.tenant')
+      region_url_param=$(echo "$target_json" | jq -r '.region_url_param')
+      service_url_param_override=$(echo "$target_json" | jq -r '.service_url_param_override // ""')
+      service_url_param="${SERVICES_REPO_MAP_DATA["$service_key,url_param_default"]}"
+      [[ -n "$service_url_param_override" && "$service_url_param_override" != "null" ]] && service_url_param="$service_url_param_override"
+      url="$SERVICE_URL_TEMPLATE"
+      url="${url//\{service_url_param\}/$service_url_param}"
+      url="${url//\{region_url_param\}/$region_url_param}"
+      url="${url//\{effective_tenant\}/$tenant}"
+      url="${url//\{effective_env\}/$environment}"
+      display_name="${SERVICES_REPO_MAP_DATA["$service_key,display_name"]}"
+      printf "[%s|%s|%s|%s] %s\n" "$display_name" "$tenant" "$environment" "$region_url_param" "$url"
+    done
+    echo "End of service URL list."
+  fi
+
+  done
     local tenant_match=false env_match=false region_match=false service_match=false
     if [[ "${SELECTED_TENANTS[0]}" == "all" || " ${SELECTED_TENANTS[*]} " =~ " $t_tenant " ]]; then tenant_match=true; fi
     if [[ "${SELECTED_ENVIRONMENTS[0]}" == "all" || " ${SELECTED_ENVIRONMENTS[*]} " =~ " $t_env " ]]; then env_match=true; fi
@@ -507,7 +596,7 @@ main() {
 
   declare -a results_array=()
   for i in $(seq 0 $((num_filtered_targets - 1))); do
-    local target_item_json="${filtered_targets_json_array[$i]}"
+    local target_item_json="${targets_after_region[$i]}"
     local target_name_for_progress
     target_name_for_progress=$(echo "$target_item_json" | jq -r '.name // "Unknown Target"')
     printf "\rProcessing target %s/%s: %s..." "$((i + 1))" "$num_filtered_targets" "$target_name_for_progress"
