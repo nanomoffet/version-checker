@@ -90,32 +90,39 @@ print_usage() {
 # --- Version Comparison ---
 compare_versions() {
     # Args: version1 (deployed), version2 (github_reference)
-    # Returns:
+    # Returns EXIT STATUS:
     #   0 if version1 == version2 (UP-TO-DATE)
     #   1 if version1 > version2 (AHEAD)
     #   2 if version1 < version2 (OUTDATED)
-    #  -1 if error or non-standard/uncomparable versions (will fallback to string inequality)
+    #   3 if error or non-standard/uncomparable versions (e.g., N/A, ERR_*)
     local v1="${1#v}" # Deployed
     local v2="${2#v}" # GitHub Reference
 
-    # Handle N/A or error states directly
-    if [[ "$v1" == N/A* || "$v1" == ERR_* || "$v1" == TIMEOUT_* || "$v1" == HTTP_* ]]; then return -1; fi
-    if [[ "$v2" == N/A* || "$v2" == ERR_* || "$v2" == NO_RELEASES ]]; then return -1; fi
+    # Handle N/A or error states directly using exit status 3
+    if [[ "$v1" == N/A* || "$v1" == ERR_* || "$v1" == TIMEOUT_* || "$v1" == HTTP_* ]]; then return 3; fi
+    if [[ "$v2" == N/A* || "$v2" == ERR_* || "$v2" == NO_RELEASES ]]; then return 3; fi
 
     # Check if they are identical first (common case)
     if [[ "$v1" == "$v2" ]]; then return 0; fi
 
     # Use sort -V for robust version comparison
+    # Redirect stderr to /dev/null in case sort -V encounters invalid version strings
     local sorted_first
-    sorted_first=$(printf '%s\n%s\n' "$v1" "$v2" | sort -V | head -n 1)
+    sorted_first=$(printf '%s\n%s\n' "$v1" "$v2" | sort -V 2>/dev/null | head -n 1)
+
+    # If sort -V had issues (e.g., non-version strings), $sorted_first might be unreliable.
+    # As a basic check, if $sorted_first is empty or not one of the inputs, treat as non-comparable.
+    if [[ -z "$sorted_first" || ("$sorted_first" != "$v1" && "$sorted_first" != "$v2") ]]; then
+        return 3 # Treat as non-comparable
+    fi
 
     if [[ "$sorted_first" == "$v1" ]]; then # v1 is smaller or equal
+        # If they weren't identical initially, v1 must be smaller
         return 2 # v1 < v2 (OUTDATED)
     else # $sorted_first must be $v2, meaning v1 is larger
         return 1 # v1 > v2 (AHEAD)
     fi
 }
-
 
 # --- YAML Parsing ---
 parse_global_config() {
