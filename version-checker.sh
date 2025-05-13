@@ -502,7 +502,6 @@ process_target() {
   echo "$target_name|$deployed_version|$github_reference_version|$status_text|$service_display_name|$tenant|$environment|$region_url_param|$raw_status_text"
   return 0
 }
-
 main() {
   INTERACTIVE_CONFIG_MODE=false
   while getopts ":f:cvr:h" opt; do
@@ -687,15 +686,13 @@ main() {
 
   log_info "All eligible targets processed. Generating report..."
 
-  local max_name_len=12 max_deployed_len=10 max_latest_len=10 max_service_len=15 max_tenant_len=7 max_env_len=5 max_region_len=8
-
-  max_name_len=$(($(echo "Target Instance" | wc -m) > max_name_len ? $(echo "Target Instance" | wc -m) : max_name_len))
-  max_deployed_len=$(($(echo "Deployed" | wc -m) > max_deployed_len ? $(echo "Deployed" | wc -m) : max_deployed_len))
-  max_latest_len=$(($(echo "GH Ref Ver" | wc -m) > max_latest_len ? $(echo "GH Ref Ver" | wc -m) : max_latest_len))
-  max_service_len=$(($(echo "Service" | wc -m) > max_service_len ? $(echo "Service" | wc -m) : max_service_len))
-  max_tenant_len=$(($(echo "Tenant" | wc -m) > max_tenant_len ? $(echo "Tenant" | wc -m) : max_tenant_len))
-  max_env_len=$(($(echo "Env" | wc -m) > max_env_len ? $(echo "Env" | wc -m) : max_env_len))
-  max_region_len=$(($(echo "Region" | wc -m) > max_region_len ? $(echo "Region" | wc -m) : max_region_len))
+  local max_name_len=13
+  local max_deployed_len=10
+  local max_latest_len=12
+  local max_service_len=7
+  local max_tenant_len=7
+  local max_env_len=5
+  local max_region_len=10
 
   for line in "${results_array[@]}"; do
     local fields=($(echo "$line" | awk -F'|' '{gsub(/\x1B\[[0-9;]*m/, ""); print $1, $2, $3, $5, $6, $7, $8}'))
@@ -710,13 +707,13 @@ main() {
     ((${#region} > max_region_len)) && max_region_len=${#region}
   done
 
-  max_name_len=$((max_name_len + 1))
-  max_deployed_len=$((max_deployed_len + 1))
-  max_latest_len=$((max_latest_len + 1))
-  max_service_len=$((max_service_len + 1))
-  max_tenant_len=$((max_tenant_len + 1))
-  max_env_len=$((max_env_len + 1))
-  max_region_len=$((max_region_len + 1))
+  max_name_len=$((max_name_len + 2))
+  max_deployed_len=$((max_deployed_len + 2))
+  max_latest_len=$((max_latest_len + 2))
+  max_service_len=$((max_service_len + 2))
+  max_tenant_len=$((max_tenant_len + 2))
+  max_env_len=$((max_env_len + 2))
+  max_region_len=$((max_region_len + 2))
 
   local format_string="%-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %s\n"
   printf "\n--- Service Version Status (Generated: $(date)) ---\n"
@@ -724,9 +721,8 @@ main() {
     "$max_service_len" "Service" "$max_tenant_len" "Tenant" "$max_env_len" "Env" "$max_region_len" "Region" \
     "$max_name_len" "Target Instance" "$max_deployed_len" "Deployed" "$max_latest_len" "GH Ref Ver" "Status"
 
-  local total_width=$((max_service_len + max_tenant_len + max_env_len + max_region_len + max_name_len + max_deployed_len + max_latest_len + 7 * 3 + 15))
-  if ((total_width < 80)); then total_width=80; fi
-  printf "%${total_width}s\n" "" | tr " " "-"
+  local separator_len=$((max_service_len + max_tenant_len + max_env_len + max_region_len + max_name_len + max_deployed_len + max_latest_len + 7 * 3))
+  printf "%${separator_len}s\n" "" | tr " " "-"
 
   declare -a sorted_results=()
   while IFS= read -r line; do sorted_results+=("$line"); done < <(
